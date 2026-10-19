@@ -19,10 +19,10 @@ from app.schemas import (
     SuggestFeaturesResponse,
 )
 
+from app.agent_routes import _format_datetime
+
 router = APIRouter()
 
-def _format_datetime(value: datetime | None) -> str:
-    return value.isoformat() if value else ""
 
 
 def _format_time_ago(value: datetime) -> str:

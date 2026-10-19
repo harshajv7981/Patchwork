@@ -34,132 +34,21 @@ class DiscoveryScheduler:
         self.scheduler.shutdown()
 
     async def run_daily_discovery(self):
-        """Run the full discovery workflow: fetch repos, find issues, store in DB."""
-        async with AsyncSessionLocal() as session:
-            run = RunModel(
-                name="Daily repository discovery",
-                status="running",
-                started_at=datetime.utcnow()
-            )
-            session.add(run)
-            await session.commit()
-
-            try:
-                trending_repos = await self.github_service.discover_trending_repositories(
-                    language="python",
-                    max_results=10
-                )
-
-                popular_repos = await self.github_service.discover_popular_repositories(
-                    language="python",
-                    max_results=10
-                )
-
-                all_repos = list({repo["full_name"]: repo for repo in trending_repos + popular_repos}.values())[:DISCOVERY_REPOSITORY_LIMIT]
-
-                if not all_repos:
-                    raise Exception("No repositories found from GitHub API")
-
-                repos_scanned = 0
-                total_issues = 0
-                failed_repos = 0
-
-                for repo_data in all_repos:
-                    try:
-                        existing_repo = await session.execute(
-                            select(RepoModel).where(
-                                RepoModel.full_name == repo_data["full_name"]
-                            )
-                        )
-                        existing_repo = existing_repo.scalar_one_or_none()
-
-                        if existing_repo:
-                            for key, value in repo_data.items():
-                                setattr(existing_repo, key, value)
-                            repo_record = existing_repo
-                        else:
-                            repo_record = RepoModel(**repo_data)
-                            session.add(repo_record)
-
-                        await session.commit()
-                        repos_scanned += 1
-                        run.repositories_scanned = repos_scanned
-                        run.issues_found = total_issues
-                        await session.commit()
-
-                        issues = await self.github_service.find_suitable_issues(
-                            repo_data["full_name"]
-                        )
-
-                        open_issue_numbers = await asyncio.to_thread(
-                            self.github_service.get_open_issue_numbers,
-                            repo_data["full_name"],
-                        )
-                        if open_issue_numbers is not None:
-                            stored_issues = await session.execute(
-                                select(IssueModel).where(
-                                    IssueModel.repository == repo_data["full_name"]
-                                )
-                            )
-                            for stored_issue in stored_issues.scalars().all():
-                                if stored_issue.number not in open_issue_numbers:
-                                    stored_issue.is_suitable = False
-                                    stored_issue.agent_status = "stale"
-
-                        for issue_data in issues:
-                            try:
-                                existing_issue = await session.execute(
-                                    select(IssueModel).where(
-                                        IssueModel.repository == issue_data["repository"],
-                                        IssueModel.number == issue_data["number"]
-                                    )
-                                )
-                                existing_issue = existing_issue.scalar_one_or_none()
-
-                                if existing_issue:
-                                    for key, value in issue_data.items():
-                                        setattr(existing_issue, key, value)
-                                else:
-                                    issue_record = IssueModel(**issue_data)
-                                    session.add(issue_record)
-                                    total_issues += 1
-
-                                run.issues_found = total_issues
-                                await session.commit()
-                            except Exception as issue_error:
-                                print(f"Error saving issue {issue_data.get('number', 'unknown')}: {issue_error}")
-                                await session.rollback()
-                                continue
-
-                        await asyncio.sleep(0.5)
-
-                    except Exception as repo_error:
-                        failed_repos += 1
-                        print(f"Error processing repo {repo_data.get('full_name', 'unknown')}: {repo_error}")
-                        await session.rollback()
-                        continue
-
-                run.status = "needs_review" if failed_repos else "completed"
-                run.repositories_scanned = repos_scanned
-                run.issues_found = total_issues
-                run.summary = (
-                    f"{repos_scanned} repositories scanned; {total_issues} issues found"
-                    + (f"; {failed_repos} repositories failed" if failed_repos else "")
-                )
-                run.completed_at = datetime.utcnow()
-                await session.commit()
-
-            except Exception as e:
-                print(f"Discovery error: {e}")
-                import traceback
-                traceback.print_exc()
-                run.status = "failed"
-                run.summary = f"Discovery failed: {str(e)}"
-                run.completed_at = datetime.utcnow()
-                await session.commit()
+        """Scheduled entry point; skips the day if a run is already in progress."""
+        try:
+            run_id = await self._create_run("Daily repository discovery")
+        except RuntimeError as error:
+            print(f"Skipping daily discovery: {error}")
+            return
+        await self._execute_discovery(run_id)
 
     async def run_discovery_now(self) -> int:
         """Trigger discovery immediately and return the run ID."""
+        run_id = await self._create_run("Manual repository discovery")
+        asyncio.create_task(self._execute_discovery(run_id))
+        return run_id
+
+    async def _create_run(self, name: str) -> int:
         async with AsyncSessionLocal() as session:
             running = await session.execute(
                 select(RunModel.id).where(RunModel.status == "running").limit(1)
@@ -168,17 +57,14 @@ class DiscoveryScheduler:
                 raise RuntimeError("A discovery run is already in progress")
 
             run = RunModel(
-                name="Manual repository discovery",
+                name=name,
                 status="running",
                 started_at=datetime.utcnow()
             )
             session.add(run)
             await session.commit()
             await session.refresh(run)
-            run_id = run.id
-
-        asyncio.create_task(self._execute_discovery(run_id))
-        return run_id
+            return run.id
 
     async def _execute_discovery(self, run_id: int):
         """Execute discovery in background."""
@@ -230,6 +116,21 @@ class DiscoveryScheduler:
                         issues = await self.github_service.find_suitable_issues(
                             repo_data["full_name"]
                         )
+
+                        open_issue_numbers = await asyncio.to_thread(
+                            self.github_service.get_open_issue_numbers,
+                            repo_data["full_name"],
+                        )
+                        if open_issue_numbers is not None:
+                            stored_issues = await session.execute(
+                                select(IssueModel).where(
+                                    IssueModel.repository == repo_data["full_name"]
+                                )
+                            )
+                            for stored_issue in stored_issues.scalars().all():
+                                if stored_issue.number not in open_issue_numbers:
+                                    stored_issue.is_suitable = False
+                                    stored_issue.agent_status = "stale"
 
                         for issue_data in issues:
                             try:
