@@ -1,6 +1,5 @@
 @echo off
 set ANTHROPIC_BASE_URL=http://localhost:20128/v1
-set ANTHROPIC_AUTH_TOKEN=sk-2995805eece764c5-d90f93-40474b82
 set ANTHROPIC_API_KEY=
 set ANTHROPIC_MODEL=kr/claude-sonnet-4.5
 set ANTHROPIC_SMALL_FAST_MODEL=kr/claude-sonnet-4.5

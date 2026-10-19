@@ -181,7 +181,7 @@ OPENROUTER_API_KEY=
 GROQ_MODEL=openai/gpt-oss-120b
 GROQ_API_KEY=
 GROQ_REASONING_EFFORT=medium
-SANDBOX_RUNTIME=process
+SANDBOX_RUNTIME=docker
 SANDBOX_DOCKER_IMAGE=patchwork-sandbox:latest
 GITHUB_WEBHOOK_SECRET=replace_with_a_random_secret
 ```
@@ -228,7 +228,7 @@ ollama pull qwen3.5:9b
 ```bash
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8000 --reload
+uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload
 ```
 
 The FastAPI backend will be available at **`http://localhost:8000`** (Interactive Swagger documentation at **`http://localhost:8000/docs`**).
@@ -275,7 +275,7 @@ The React dashboard will be live at **`http://localhost:5173`**.
 ## 🔒 Safety & Isolation Philosophy
 
 - **Provider choice**: Ollama runs locally. OpenRouter sends prompts and repository context to a hosted model provider; use it only for repositories and code you are comfortable sharing under the provider's terms.
-- **Selectable Sandbox Isolation**: Development defaults to process mode. Production can set `SANDBOX_RUNTIME=docker` and build `Dockerfile.sandbox` for a container with no network, read-only root filesystem, dropped capabilities, no-new-privileges, CPU/memory/PID limits, strict timeouts, and automatic cleanup.
+- **Selectable Sandbox Isolation**: Defaults to `SANDBOX_RUNTIME=docker` (build `Dockerfile.sandbox` as `patchwork-sandbox:latest` first): a container with no network, read-only root filesystem, dropped capabilities, no-new-privileges, CPU/memory/PID limits, strict timeouts, and automatic cleanup.
   - **Credential Scrubbing**: `GITHUB_TOKEN`, `DATABASE_URL`, API keys, and any environment variable matching `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL` patterns are stripped from the sandbox environment.
   - **Memory Limits**: `ulimit -v` caps sandbox process virtual memory at 512 MB on Linux/macOS.
   - **Output Caps**: stdout/stderr are truncated at 1 MB to prevent runaway output.

@@ -50,7 +50,7 @@ OLLAMA_REVIEW_MODEL=qwen3.5:9b
 LLM_PROVIDER=ollama
 OPENROUTER_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
 OPENROUTER_API_KEY=
-SANDBOX_RUNTIME=process
+SANDBOX_RUNTIME=docker
 SANDBOX_DOCKER_IMAGE=patchwork-sandbox:latest
 GITHUB_WEBHOOK_SECRET=
 EOF
@@ -101,7 +101,7 @@ echo ""
 echo "📋 Next steps:"
 echo "   1. Edit .env and add your GITHUB_TOKEN (optional but recommended)"
 echo "   2. Start PostgreSQL if not running"
-echo "   3. Start the API: uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8000"
+echo "   3. Start the API: uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000"
 echo "   4. Start the frontend: cd frontend && npm run dev"
 echo "   5. Open http://localhost:5173"
 echo ""

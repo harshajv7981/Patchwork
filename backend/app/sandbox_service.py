@@ -30,7 +30,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 REPOS_CACHE_DIR = Path.home() / ".patchwork" / "repos"
-SANDBOX_RUNTIME = os.getenv("SANDBOX_RUNTIME", "process").lower()
+SANDBOX_RUNTIME = os.getenv("SANDBOX_RUNTIME", "docker").lower()
 SANDBOX_DOCKER_IMAGE = os.getenv("SANDBOX_DOCKER_IMAGE", "patchwork-sandbox:latest")
 
 # Sandbox interpreter can target an older project-compatible Python without
@@ -86,7 +86,7 @@ def _make_sandbox_env(cwd: Path, env_extra: dict[str, str] | None = None) -> dic
     for k, v in os.environ.items():
         if k.upper() in SENSITIVE_ENV_KEYS or k.upper() in SANDBOX_ENV_KEYS:
             continue
-        if any(pat in k.upper() for pat in ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")):
+        if any(pat in k.upper() for pat in ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "KEY")):
             continue
         env[k] = v
     env["PYTHONPATH"] = str(cwd)
