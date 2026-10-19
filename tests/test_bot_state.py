@@ -76,6 +76,17 @@ class BotLimitTests(unittest.TestCase):
         run("drop", *args, "--reason", "not reproducible")
         self.assertTrue(run("seen", *args)[1]["seen"])
 
+    def test_deferred_findings_stay_unseen_until_submitted_or_dropped(self):
+        f = ("--repo", "o/a", "--kind", "bug", "--file", "a.py")
+        self.assertEqual(run("defer", *f, "--title", "DOI prefix", "--confidence", "high")[0], 0)
+        self.assertEqual(run("defer", *f, "--title", "Slug bug")[0], 0)
+        self.assertFalse(run("seen", *f, "--title", "DOI prefix")[1]["seen"])  # still a candidate
+        self.assertEqual(len(run("deferred", "o/a")[1]["o/a"]), 2)
+        add("o/a", "DOI prefix")  # submitting it clears it from the backlog
+        run("drop", *f, "--title", "Slug bug", "--reason", "fixed upstream")
+        self.assertEqual(run("deferred", "o/a")[1]["o/a"], [])
+        self.assertEqual(run("defer", *f, "--title", "DOI prefix")[0], bot.REFUSED)  # already submitted
+
     def test_audit_cooldown(self):
         self.assertEqual(run("check", "o/a", "--audit")[0], 0)
         run("audited", "o/a")
