@@ -26,6 +26,17 @@ from app.schemas import (
 
 router = APIRouter(prefix="/api")
 
+# Keep a reference to each fire-and-forget run; the event loop only holds a weak one,
+# so without this the task can be garbage-collected mid-run.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
 
 def _format_datetime(value: datetime | None) -> str:
     return value.isoformat() if value else ""
@@ -89,7 +100,7 @@ async def start_agent_run(
         if run.status == "failed":
             run.failure_reason = None
             await db.commit()
-        asyncio.create_task(_execute_agent_run(run.id))
+        _spawn(_execute_agent_run(run.id))
     return _agent_run_response(run)
 
 
@@ -145,7 +156,7 @@ async def start_next_agent_run(db: AsyncSession = Depends(get_db)) -> AgentRunRe
     run = await ContributionAgent(db).start(
         candidates[0]["id"], f"autonomous:issue:{candidates[0]['id']}"
     )
-    asyncio.create_task(_execute_agent_run(run.id))
+    _spawn(_execute_agent_run(run.id))
     return _agent_run_response(run)
 
 
@@ -211,7 +222,7 @@ async def resume_agent_run(run_id: int, db: AsyncSession = Depends(get_db)) -> A
         raise HTTPException(status_code=404, detail="Agent run not found")
     if run.status not in {"failed", "queued"}:
         raise HTTPException(status_code=409, detail=f"Run is not resumable from {run.status}")
-    asyncio.create_task(_execute_agent_run(run.id))
+    _spawn(_execute_agent_run(run.id))
     return _agent_run_response(run)
 
 
