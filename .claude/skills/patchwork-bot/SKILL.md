@@ -66,7 +66,9 @@ S() { "$PW/.venv/bin/python" "$SKILL_DIR/scripts/state.py" "$@"; }
 SANDBOX() { "$PW/.venv/bin/python" "$SKILL_DIR/scripts/sandbox.py" "$@"; }
 S check <repo> [--audit]      # may we open a new item? --audit also checks the 14-day cool-down
 S audited <repo>              # start the cool-down after auditing a repo
-S seen|drop --repo --kind --file --title [--reason]
+S seen|drop --repo --kind --file --title [--reason]   # drop = never revisit (false positive, duplicate, fixed)
+S defer --repo --kind --file --title [--line --confidence --note]  # good finding, not now
+S deferred [<repo>]            # the backlog; submitting or dropping a finding clears it
 S add --repo --kind --file --title --url --type issue|pr --number N [--branch]
 S update <id> [--status S] [--pr-url U --pr-number N] [--inc review|ci]
 S mark <repo> new|trusted|dnc [--reason]
@@ -138,6 +140,11 @@ already fail; they're pre-existing and not the bot's to fix.
 
 ### 3. Audit with fresh eyes
 
+**Start from the backlog.** If `S deferred <repo>` lists findings, take them first, in
+confidence order: re-check each against the current code (it may have been fixed), then
+run it through dedupe (step 4) and prove (step 5) as if it were new. Only run the lenses
+below if none of the deferred findings survive.
+
 Check trust with `S repo <repo>`. Spawn the lenses as **parallel subagents** (Agent
 tool), each told the repo path and its lens. Subagents read cold, which is the point: no
 shared assumptions.
@@ -205,8 +212,10 @@ fix is quick and review again; anything else, drop it.
 
 Rank the surviving findings by impact × confidence × smallness. Submit the top one (and
 another only if the cap allows and it's from a different repo; the one-open-item-per-repo
-rule means a second finding in the same repo waits for a later run). Record the rest with
-`S drop --reason "ranked lower; revisit next audit"` so they aren't lost silently.
+rule means a second finding in the same repo waits for a later run). **Defer** the other
+proven-or-plausible findings with `S defer ...` (include confidence and a short note) so
+the next audit of this repo starts from them. Don't `drop` them: `drop` means "never look
+at this again" and is only for false positives, duplicates and things already fixed.
 
 ### 8. Submit
 
@@ -325,6 +334,21 @@ wanted / disclosure line.
 > Thanks for the review. I'll follow up on this one by hand.
 
 Also flag the item in the run report under "needs you", so the operator actually does.
+
+## Scheduling
+
+`scripts/scheduled_run.sh [run|watch|status]` runs the skill headless
+(`claude -p "/patchwork-bot run"` with pre-approved tools) and logs to
+`~/.patchwork-bot/logs/run-<timestamp>.log`, keeping the last 60. On macOS it's driven by
+a launchd job, `~/Library/LaunchAgents/local.patchwork-bot.plist`, at 10:00 daily (a
+missed run fires on wake).
+
+- Run now: `launchctl kickstart gui/$(id -u)/local.patchwork-bot`
+- Pause: `launchctl bootout gui/$(id -u)/local.patchwork-bot`
+- Resume: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.patchwork-bot.plist`
+
+Docker Desktop must be running for audits; if it isn't, the preflight still lets `watch`
+answer maintainers and the run report says why no audit happened.
 
 ## Run report
 

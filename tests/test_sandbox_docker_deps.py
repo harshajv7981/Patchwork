@@ -127,6 +127,8 @@ class DockerRunFlagsTests(unittest.TestCase):
         self.assertIn("--network=none", cmd)
         self.assertNotIn("--network=bridge", cmd)
         self.assertIn("PYTHONPATH=/workspace", cmd)
+        # subprocess calls to `python3` inside tests must resolve to the venv interpreter
+        self.assertTrue(any(a.startswith("PATH=/workspace/.patchwork-venv/bin:") for a in cmd))
         self.assertNotIn("PIP_CACHE_DIR=/pip-cache", cmd)
         self.assertEqual(cmd[-3:], ["python", "-m", "pytest"])  # host interpreter -> image python
 
@@ -137,6 +139,22 @@ class DockerRunFlagsTests(unittest.TestCase):
         self.assertNotIn("PYTHONPATH=/workspace", cmd)
         self.assertIn("PIP_CONFIG_FILE=/dev/null", cmd)
         self.assertEqual(cmd[cmd.index("-w") + 1], "/tmp")
+
+
+class TargetedTestsTests(unittest.TestCase):
+    def test_targeted_test_directory_is_run_not_dropped(self):
+        # A targeted directory must reach pytest; it used to be dropped silently, falling
+        # back to the repo's root tests/ and reporting on tests nobody asked for.
+        with tempfile.TemporaryDirectory() as d:
+            sandbox = Path(d)
+            (sandbox / "tests").mkdir()
+            (sandbox / "pkg" / "tests").mkdir(parents=True)
+            with patch.object(sandbox_service, "_prepare_test_environment", return_value=("python", "pip", None)), \
+                    patch.object(sandbox_service, "_run_cmd", return_value=(0, "1 passed in 0.1s", "", 0.1)) as run:
+                sandbox_service._run_pytest_suite(sandbox, ["pkg/tests"], runtime="docker")
+        cmd = run.call_args.args[0]
+        self.assertIn("pkg/tests", cmd)
+        self.assertNotIn("tests", cmd)
 
 
 if __name__ == "__main__":

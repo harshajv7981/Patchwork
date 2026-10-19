@@ -161,6 +161,9 @@ def _run_cmd(
                 "-w", "/workspace",
                 "-e", "HOME=/workspace",
                 "-e", "PYTHONPATH=/workspace",
+                # Like activating the venv: tests that shell out to `python3`/`python` must
+                # get the interpreter with the project's deps, not the image's bare one.
+                "-e", f"PATH=/workspace/{DOCKER_VENV_DIR}/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
             ]
         full_cmd = [
             "docker", "run", "--rm",
@@ -813,7 +816,13 @@ def _run_pytest_suite(
         ]
 
     # If specific test files are in target_files, target them directly
-    targeted_tests = [f for f in target_files if "test" in f.lower() and f.endswith(".py") and (sandbox_dir / f).exists()]
+    # Test files *or* test directories may be targeted. Dropping a directory silently would
+    # fall back to some other test dir and report green on tests nobody asked for.
+    targeted_tests = [
+        f for f in target_files
+        if "test" in f.lower()
+        and ((f.endswith(".py") and (sandbox_dir / f).is_file()) or (sandbox_dir / f).is_dir())
+    ]
 
     cmd = [
         python_path, "-m", "pytest",

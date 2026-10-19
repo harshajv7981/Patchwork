@@ -36,9 +36,11 @@ def _path() -> Path:
 
 def load() -> dict:
     try:
-        return json.loads(_path().read_text())
+        state = json.loads(_path().read_text())
     except FileNotFoundError:
-        return {"repos": {}, "items": [], "seen": {}}
+        state = {"repos": {}, "items": [], "seen": {}}
+    state.setdefault("deferred", {})  # repo -> {fingerprint: finding}
+    return state
 
 
 def save(state: dict) -> None:
@@ -102,6 +104,16 @@ def main(argv: list[str] | None = None) -> int:
     for a in ("--repo", "--kind", "--file", "--title", "--reason"):
         d.add_argument(a, required=True)
 
+    f = sub.add_parser("defer", help="keep a good finding for later (repo slot taken / cap reached)")
+    for a in ("--repo", "--kind", "--file", "--title"):
+        f.add_argument(a, required=True)
+    f.add_argument("--line", type=int, default=0)
+    f.add_argument("--confidence", default="")
+    f.add_argument("--note", default="")
+
+    dl = sub.add_parser("deferred", help="deferred findings for a repo (or all repos)")
+    dl.add_argument("repo", nargs="?")
+
     a = sub.add_parser("add", help="record a new upstream issue/PR (enforces caps)")
     for x in ("--repo", "--kind", "--file", "--title", "--url"):
         a.add_argument(x, required=True)
@@ -146,8 +158,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "drop":
         fp = fingerprint(args.repo, args.kind, args.file, args.title)
         state["seen"][fp] = {"outcome": "dropped", "reason": args.reason, "at": _now()}
+        state["deferred"].get(args.repo, {}).pop(fp, None)
         save(state)
         return _out({"dropped": fp})
+
+    if args.cmd == "defer":
+        fp = fingerprint(args.repo, args.kind, args.file, args.title)
+        if fp in state["seen"]:
+            return _out({"ok": False, "reason": f"already {state['seen'][fp]['outcome']}"}, REFUSED)
+        state["deferred"].setdefault(args.repo, {})[fp] = {
+            "kind": args.kind, "file": args.file, "line": args.line, "title": args.title,
+            "confidence": args.confidence, "note": args.note, "at": _now(),
+        }
+        save(state)
+        return _out({"ok": True, "deferred": fp})
+
+    if args.cmd == "deferred":
+        repos = [args.repo] if args.repo else sorted(state["deferred"])
+        return _out({r: list(state["deferred"].get(r, {}).values()) for r in repos})
 
     if args.cmd == "add":
         ok, reason = check(state, args.repo)
@@ -163,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         state["items"].append(item)
         state["seen"][fp] = {"outcome": "submitted", "item": item["id"], "at": _now()}
+        state["deferred"].get(args.repo, {}).pop(fp, None)
         state["repos"].setdefault(args.repo, {"status": "new"})
         save(state)
         return _out({"ok": True, "item": item})
