@@ -175,7 +175,16 @@ OLLAMA_HOST=http://127.0.0.1:11434
 OLLAMA_MODEL=qwen3.5:9b
 OLLAMA_CODING_MODEL=qwen3.5:9b
 OLLAMA_REVIEW_MODEL=qwen3.5:9b
-LLM_PROVIDER=ollama
+
+# Recommended free provider: Google Gemini (large free per-minute token budget
+# fits multi-file code generation; Groq's free 8K TPM does not).
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_TRIAGE_MODEL=gemini-2.5-flash-lite
+GEMINI_CODING_MODEL=gemini-2.5-flash
+GEMINI_REVIEW_MODEL=gemini-2.5-flash
+
 OPENROUTER_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
 OPENROUTER_API_KEY=
 GROQ_MODEL=openai/gpt-oss-120b
@@ -186,9 +195,14 @@ SANDBOX_DOCKER_IMAGE=patchwork-sandbox:latest
 GITHUB_WEBHOOK_SECRET=replace_with_a_random_secret
 ```
 
-To use OpenRouter instead of Ollama, set `LLM_PROVIDER=openrouter`, create a replacement OpenRouter key, and put it in `OPENROUTER_API_KEY`. The default OpenRouter model is `nvidia/nemotron-3-ultra-550b-a55b:free`; Ollama remains available with `LLM_PROVIDER=ollama`. Restart the backend after changing `.env`. Do not commit API keys or use the previously exposed key.
+**Choosing a provider (all free, no credit card):**
 
-To use Groq instead, set `LLM_PROVIDER=groq`, put your key in `GROQ_API_KEY`, and use `GROQ_MODEL=openai/gpt-oss-120b` (the default). `GROQ_REASONING_EFFORT=medium` is used by default and can be set to `none` for models that do not support reasoning. Restart the backend after changing `.env`.
+- **Gemini (recommended).** Get a key at [aistudio.google.com](https://aistudio.google.com/) and set `LLM_PROVIDER=gemini`. Its free tier allows 250K–1M tokens/minute, which comfortably holds this app's code-generation prompts. `gemini-2.5-flash-lite` handles the cheap triage calls; `gemini-2.5-flash` does coding and review. Confirm your project's current limits at [aistudio.google.com/rate-limit](https://aistudio.google.com/rate-limit).
+- **Groq** (`LLM_PROVIDER=groq`, key in `GROQ_API_KEY`) is the fastest and free, but its free tier caps at ~8K tokens/minute — fine for small triage prompts, too small for one coding call. `GROQ_REASONING_EFFORT=medium` is the default; set `none` for models without reasoning.
+- **OpenRouter** (`LLM_PROVIDER=openrouter`, key in `OPENROUTER_API_KEY`): free `:free` models are limited to 50 requests/day until $10 of lifetime credit, so not ideal for multi-call agent runs.
+- **Ollama** (`LLM_PROVIDER=ollama`): fully local, unlimited and private, but needs a capable GPU and `qwen3.5:9b` is weaker at multi-file fixes.
+
+Restart the backend after changing `.env`. Do not commit API keys or reuse a previously exposed key.
 
 ### Agent Workflow API
 
