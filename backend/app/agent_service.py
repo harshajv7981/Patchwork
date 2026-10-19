@@ -47,6 +47,7 @@ from app.agent_helpers import (
     _repo_file_tree,
     _run,
     _safe_repo_path,
+    repo_lock,
 )
 
 
@@ -556,18 +557,19 @@ async def open_pull_request(
     fork = await asyncio.to_thread(_get_or_create_fork, user, upstream)
     logger.info("PR creation fork ready repo=%s fork=%s", repo_full_name, fork.full_name)
 
-    try:
-        local = await asyncio.to_thread(_clone_or_update, repo_full_name)
-        await asyncio.to_thread(
-            _push_branch, local, fork.full_name, upstream.default_branch, branch, file_rewrites, commit_msg
-        )
-        pr = await asyncio.to_thread(
-            _open_github_pr,
-            upstream, fork, branch, upstream.default_branch, pr_title, pr_body
-        )
-    finally:
-        # The clone's fork remote URL embeds GITHUB_TOKEN; never leave it on disk.
-        await asyncio.to_thread(_cleanup_repo_cache, repo_full_name)
+    async with repo_lock(repo_full_name):
+        try:
+            local = await asyncio.to_thread(_clone_or_update, repo_full_name)
+            await asyncio.to_thread(
+                _push_branch, local, fork.full_name, upstream.default_branch, branch, file_rewrites, commit_msg
+            )
+            pr = await asyncio.to_thread(
+                _open_github_pr,
+                upstream, fork, branch, upstream.default_branch, pr_title, pr_body
+            )
+        finally:
+            # The clone's fork remote URL embeds GITHUB_TOKEN; never leave it on disk.
+            await asyncio.to_thread(_cleanup_repo_cache, repo_full_name)
     logger.info("PR creation completed repo=%s pr=%s", repo_full_name, pr.number)
 
     return {

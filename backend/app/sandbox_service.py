@@ -22,7 +22,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-from app.agent_helpers import _clone_or_update
+from app.agent_helpers import _clone_or_update, repo_lock
 from app.llm_client import get_llm_client
 from app.model_router import model_for
 
@@ -115,8 +115,13 @@ def _run_cmd(
     timeout: int = 30,
     env_extra: dict[str, str] | None = None,
     runtime: str | None = None,
+    network: bool = False,
 ) -> tuple[int, str, str, float]:
-    """Execute command with timeout and return (exit_code, stdout, stderr, duration)."""
+    """Execute command with timeout and return (exit_code, stdout, stderr, duration).
+
+    In Docker mode `network=True` enables outbound network for that one run (dependency
+    installs only); tests always run with the network off.
+    """
     runtime = (runtime or SANDBOX_RUNTIME).lower()
     env = _make_sandbox_env(cwd, env_extra)
 
@@ -124,22 +129,29 @@ def _run_cmd(
         return 1, "", f"Unsupported sandbox runtime: {runtime}", 0.0
 
     if runtime == "docker":
-        executable = "python" if Path(cmd[0]).name.startswith("python") else cmd[0]
+        # Map the host bootstrap interpreter to the image's `python`; leave a
+        # workspace-relative venv interpreter (e.g. .patchwork-venv/bin/python) as-is so
+        # runc resolves it against -w /workspace.
+        first = cmd[0]
+        executable = "python" if (Path(first).is_absolute() and Path(first).name.startswith("python")) else first
         cmd = [executable, *cmd[1:]]
+        tmpfs = "/tmp:rw,nosuid,size=256m" if network else "/tmp:rw,noexec,nosuid,size=64m"
         full_cmd = [
             "docker", "run", "--rm",
-            "--network=none",
+            "--network=bridge" if network else "--network=none",
             "--read-only",
             "--cap-drop=ALL",
             "--security-opt", "no-new-privileges",
             "--pids-limit", "128",
             "--memory", f"{MAX_SANDBOX_MEMORY_MB}m",
             "--cpus", "1",
-            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+            "--tmpfs", tmpfs,
             "-v", f"{cwd.resolve()}:/workspace:rw",
             "-w", "/workspace",
             "-e", "PYTHONPATH=/workspace",
             "-e", "PYTHONDONTWRITEBYTECODE=1",
+            "-e", "HOME=/workspace",
+            "-e", "PIP_NO_CACHE_DIR=1",
             SANDBOX_DOCKER_IMAGE,
             *cmd,
         ]
@@ -302,6 +314,59 @@ def _check_types(sandbox_dir: Path, target_files: list[str], runtime: str) -> di
     }
 
 
+def _prepare_docker_test_environment(
+    sandbox_dir: Path,
+    pyproject: Path,
+    requirement_files: list[Path],
+    editable_projects: list[Path],
+) -> tuple[str, str, str | None]:
+    """Create a project venv inside the container and install its deps with the network on.
+
+    Uses only `python -m venv` + pip, so it needs nothing in the sandbox image beyond a
+    Python with venv and pip; the venv interpreter is returned as a /workspace-relative
+    path so the (offline) pytest run executes it inside the container.
+
+    ponytail: assumes the image has python3 (venv+pip) and bridge networking is available;
+    a 512MB cap or /tmp build-exec limits can still fail very heavy installs. Upgrade path:
+    bake common deps into the image, or raise --memory for the install run.
+    """
+    manager = "pip (docker)"
+    venv_python = ".patchwork-venv/bin/python"  # relative to /workspace
+    code, out, err, _ = _run_cmd(
+        ["python", "-m", "venv", ".patchwork-venv"],
+        cwd=sandbox_dir,
+        timeout=120,
+        runtime="docker",
+        network=True,
+    )
+    if code != 0:
+        return venv_python, manager, f"Could not create the Docker test venv:\n{(out + err)[-3000:]}"
+
+    install = [venv_python, "-m", "pip", "install", "--disable-pip-version-check", "pytest"]
+    if editable_projects:
+        for project_dir in editable_projects:
+            install.extend(["-e", f"{project_dir.relative_to(sandbox_dir)}[dev]"])
+    elif requirement_files:
+        for requirement_file in requirement_files:
+            install.extend(["-r", str(requirement_file.relative_to(sandbox_dir))])
+    elif pyproject.is_file():
+        install.extend(["-e", ".[dev]"])
+
+    code, out, err, _ = _run_cmd(
+        install,
+        cwd=sandbox_dir,
+        timeout=SANDBOX_DEPENDENCY_TIMEOUT_SECONDS,
+        runtime="docker",
+        network=True,
+    )
+    if code != 0:
+        detail = (err or out or f"installer exited with status {code}").strip()
+        logger.warning("Docker sandbox dependency installation failed")
+        return venv_python, manager, f"Dependency installation failed in the Docker sandbox:\n{detail[-3000:]}"
+    logger.info("Docker sandbox dependencies installed")
+    return venv_python, manager, None
+
+
 def _prepare_test_environment(
     sandbox_dir: Path,
     runtime: str,
@@ -351,12 +416,7 @@ def _prepare_test_environment(
         return VENV_PYTHON, "Patchwork environment", None
 
     if runtime == "docker":
-        return (
-            VENV_PYTHON,
-            "Docker image",
-            "Dependency installation is disabled in Docker sandbox mode because its network is disabled; "
-            "add the target project's dependencies to the sandbox image.",
-        )
+        return _prepare_docker_test_environment(sandbox_dir, pyproject, requirement_files, editable_projects)
 
     uv = shutil.which("uv")
     poetry = shutil.which("poetry")
@@ -734,26 +794,25 @@ async def run_sandbox_validation(
     if runtime not in {"process", "docker"}:
         raise ValueError(f"Unsupported sandbox runtime: {runtime}")
 
-    # 1. Fetch repo
-    local_repo = await asyncio.to_thread(_clone_or_update, repo_full_name)
-
-    # 2. Create isolated sandbox directory
+    # 1. Fetch repo and 2. copy into an isolated sandbox dir, under the per-repo lock so
+    # a concurrent PR push (checkout/cleanup) can't corrupt the tree we copy.
     sandbox_id = str(uuid.uuid4())[:8]
     temp_dir = Path(tempfile.gettempdir()) / f"patchwork_sandbox_{sandbox_id}"
 
+    def _ignore_patterns(path, names):
+        return {".git", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache"}
+
     t_start = time.time()
     try:
-        # Copy repo files into temp directory (ignoring .git cache to be ultra-fast)
-        def _ignore_patterns(path, names):
-            return {".git", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache"}
-
-        await asyncio.to_thread(
-            shutil.copytree,
-            local_repo,
-            temp_dir,
-            ignore=_ignore_patterns,
-            dirs_exist_ok=True,
-        )
+        async with repo_lock(repo_full_name):
+            local_repo = await asyncio.to_thread(_clone_or_update, repo_full_name)
+            await asyncio.to_thread(
+                shutil.copytree,
+                local_repo,
+                temp_dir,
+                ignore=_ignore_patterns,
+                dirs_exist_ok=True,
+            )
 
         # 3. Apply file rewrites
         for rel_path, content in file_rewrites.items():
@@ -1030,6 +1089,11 @@ async def run_sandbox_validation_with_auto_heal(
         runtime=runtime,
     )
     if initial_result.get("overall_status") == "passed":
+        return {**initial_result, "file_rewrites": file_rewrites}
+
+    # A setup/environment failure (missing deps, no Docker) is not something the LLM can
+    # fix by rewriting code, so don't burn heal attempts on it.
+    if initial_result.get("checks", {}).get("tests", {}).get("setup_error"):
         return {**initial_result, "file_rewrites": file_rewrites}
 
     try:

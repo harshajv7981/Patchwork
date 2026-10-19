@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import shutil
 import subprocess
+from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +15,16 @@ REPOS_CACHE_DIR = Path.home() / ".patchwork" / "repos"
 logger = logging.getLogger(__name__)
 MAX_FILE_CHARS = 6000
 MAX_FILES = 4
+
+# Sandbox copies and PR pushes share one clone dir per repo; serialize access so a
+# push's checkout/cleanup can't interleave with another run's copy.
+# ponytail: in-process only (asyncio.Lock) — a multi-worker deploy needs a real lock.
+_repo_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+def repo_lock(repo_full_name: str) -> asyncio.Lock:
+    """Return the shared lock guarding this repo's local clone."""
+    return _repo_locks[repo_full_name]
 
 # ---------------------------------------------------------------------------
 # helpers

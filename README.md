@@ -275,7 +275,7 @@ The React dashboard will be live at **`http://localhost:5173`**.
 ## 🔒 Safety & Isolation Philosophy
 
 - **Provider choice**: Ollama runs locally. OpenRouter sends prompts and repository context to a hosted model provider; use it only for repositories and code you are comfortable sharing under the provider's terms.
-- **Selectable Sandbox Isolation**: Defaults to `SANDBOX_RUNTIME=docker` (build `Dockerfile.sandbox` as `patchwork-sandbox:latest` first): a container with no network, read-only root filesystem, dropped capabilities, no-new-privileges, CPU/memory/PID limits, strict timeouts, and automatic cleanup.
+- **Selectable Sandbox Isolation**: Defaults to `SANDBOX_RUNTIME=docker` (build `Dockerfile.sandbox` as `patchwork-sandbox:latest` first): a container with a read-only root filesystem, dropped capabilities, no-new-privileges, CPU/memory/PID limits, strict timeouts, and automatic cleanup. Dependency installs run in a short-lived container with networking enabled; the test run itself always executes with `--network=none`.
   - **Credential Scrubbing**: `GITHUB_TOKEN`, `DATABASE_URL`, API keys, and any environment variable matching `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL` patterns are stripped from the sandbox environment.
   - **Memory Limits**: `ulimit -v` caps sandbox process virtual memory at 512 MB on Linux/macOS.
   - **Output Caps**: stdout/stderr are truncated at 1 MB to prevent runaway output.
