@@ -89,8 +89,11 @@ SANDBOX <checkout> [--changed F ...] [--tests T ...]
 3. **Discover**: `"$PW/.venv/bin/python" "$SKILL_DIR/scripts/discover.py"`. It combines
    today's GitHub trending Python repos with the top 50 by stars, drops forks, inactive
    repos, list/docs repos, repos under 50% Python, and anything `state.py` blocks
-   (do-not-contact, open item, audit cool-down). Then it keeps only repos that are
-   **receptive**, judged from their last 100 closed PRs:
+   (do-not-contact, open item, audit cool-down). It keeps **English-language repos only**
+   (description + README judged together; a README that's more than 10% CJK, or that
+   language detection says isn't English, is skipped): maintainers of a repo whose primary
+   README is in another language mostly work in it, so an English report is a poor fit.
+   Then it keeps only repos that are **receptive**, judged from their last 100 closed PRs:
    - at least 5 PRs from outside contributors to judge by (bots and maintainers excluded)
    - at least 40% of outsider PRs merged
    - median time to merge an outsider PR ≤ 7 days, or ≤ 3 days and ≤ 1.5 months of
