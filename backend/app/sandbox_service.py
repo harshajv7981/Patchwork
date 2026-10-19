@@ -140,7 +140,10 @@ def _run_cmd(
         if cmd[0] == VENV_PYTHON:
             cmd = ["python", *cmd[1:]]
         if network:
-            PIP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            # pip's download/unpack temp files go on the host-backed cache volume: the
+            # in-memory /tmp counts against the container's memory cap and is far too
+            # small for projects with large wheels.
+            (PIP_CACHE_DIR / ".tmp").mkdir(parents=True, exist_ok=True)
             run_args = [
                 "--network=bridge",
                 "--tmpfs", "/tmp:rw,nosuid,size=256m",
@@ -148,6 +151,7 @@ def _run_cmd(
                 "-w", "/tmp",
                 "-e", "HOME=/tmp",
                 "-e", "PIP_CACHE_DIR=/pip-cache",
+                "-e", "TMPDIR=/pip-cache/.tmp",
                 "-e", "PIP_CONFIG_FILE=/dev/null",
             ]
         else:
@@ -404,6 +408,12 @@ def _prepare_docker_test_environment(
             timeout=SANDBOX_DEPENDENCY_TIMEOUT_SECONDS,
             runtime="docker",
         )
+        if code != 0 and set(projects) == {sandbox_dir}:
+            # The repo root isn't an installable package (e.g. a flat collection of modules).
+            # Its declared deps are already in the venv and the offline run puts /workspace on
+            # PYTHONPATH, so the tests can still import it from source.
+            logger.info("Repo root is not installable; running tests from source")
+            return DOCKER_VENV_PYTHON, f"{manager}, run from source", None
     if code != 0:
         detail = (err or out or f"installer exited with status {code}").strip()
         logger.warning("Docker sandbox dependency installation failed")
