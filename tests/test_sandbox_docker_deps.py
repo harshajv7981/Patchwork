@@ -96,6 +96,20 @@ lint = ["ruff"]
         self.assertIn("does not declare its dependencies statically", setup_error)
         self.assertEqual(calls, [])
 
+    def test_non_installable_repo_root_runs_from_source(self):
+        # Wheels install fine, but the repo root isn't a package (flat collection of modules):
+        # the offline editable install fails and the tests should still run from source.
+        def fake(cmd, cwd, timeout=30, env_extra=None, runtime=None, network=False):
+            return (0, "", "", 0.1) if network else (1, "", "Multiple top-level packages discovered", 0.1)
+
+        with tempfile.TemporaryDirectory() as d:
+            sandbox = Path(d)
+            (sandbox / "pyproject.toml").write_text("[project]\nname='algos'\ndependencies=['numpy']\n")
+            with patch.object(sandbox_service, "_run_cmd", side_effect=fake):
+                _, manager, setup_error = sandbox_service._prepare_test_environment(sandbox, "docker")
+        self.assertIsNone(setup_error)
+        self.assertIn("run from source", manager)
+
     def test_install_failure_surfaces_as_setup_error(self):
         _, setup_error, _ = self._run({"requirements.txt": "nope\n"}, result=(1, "", "No matching distribution", 0.1))
         self.assertIn("No matching distribution", setup_error)
