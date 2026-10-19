@@ -33,8 +33,9 @@ REPOS_CACHE_DIR = Path.home() / ".patchwork" / "repos"
 SANDBOX_RUNTIME = os.getenv("SANDBOX_RUNTIME", "process").lower()
 SANDBOX_DOCKER_IMAGE = os.getenv("SANDBOX_DOCKER_IMAGE", "patchwork-sandbox:latest")
 
-# Python executable from virtual environment
-VENV_PYTHON = sys.executable
+# Sandbox interpreter can target an older project-compatible Python without
+# changing the interpreter running the Patchwork backend.
+VENV_PYTHON = os.getenv("SANDBOX_PYTHON", sys.executable).strip() or sys.executable
 
 
 def _clone_or_get_repo(repo_full_name: str) -> Path:
@@ -59,6 +60,7 @@ SENSITIVE_ENV_KEYS = {
     "DATABASE_URL", "DB_URL", "DB_PASSWORD",
     "SECRET_KEY", "API_KEY", "AWS_SECRET_ACCESS_KEY",
     "AWS_ACCESS_KEY_ID", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
 }
 SANDBOX_ENV_KEYS = {"VIRTUAL_ENV", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"}
 

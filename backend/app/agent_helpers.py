@@ -86,7 +86,7 @@ def _read_file(local: Path, rel_path: str) -> str:
     full = _safe_repo_path(local, rel_path)
     if full is None:
         return ""
-    if not full.exists():
+    if not full.is_file():
         return ""
     text = full.read_text(errors="replace")
     if len(text) > MAX_FILE_CHARS:

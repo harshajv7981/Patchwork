@@ -668,10 +668,11 @@
   line-height: 1.45;
   text-align: left;
   cursor: pointer;
+  transition: color 160ms ease;
 }
 
 .issue-title:hover {
-  color: #aa674f;
+  color: #c05f43;
 }
 
 .issue-meta {
@@ -832,6 +833,15 @@
   border-top: 1px solid #ecefe7;
 }
 
+.run-list > div[role="button"] {
+  cursor: pointer;
+}
+
+.run-list > div[role="button"]:focus-visible {
+  outline: 2px solid #7e9d72;
+  outline-offset: -2px;
+}
+
 .run-icon {
   width: 28px;
   height: 28px;
@@ -869,6 +879,100 @@
 .run-list .run-failure {
   color: #ad6c56;
   line-height: 1.35;
+}
+
+.agent-live-console {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-live-console-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #526257;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-live-console-title small {
+  color: #9aa49b;
+  font-size: 0.65rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.agent-step-entry {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 7px 8px;
+  border: 1px solid #e7ece5;
+  border-radius: 6px;
+  background: #fbfcfa;
+}
+
+.agent-step-indicator {
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: #7f9c78;
+}
+
+.agent-step-failed .agent-step-indicator,
+.agent-step-error {
+  color: #ad6c56;
+}
+
+.agent-step-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.agent-step-copy strong {
+  color: #445348;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.agent-step-copy small,
+.agent-step-error {
+  font-size: 0.69rem;
+  line-height: 1.4;
+}
+
+.agent-step-copy small {
+  color: #7d897f;
+}
+
+.agent-step-error {
+  overflow-wrap: anywhere;
+}
+
+.agent-step-details {
+  color: #66736a;
+  font-size: 0.67rem;
+}
+
+.agent-step-details summary {
+  cursor: pointer;
+}
+
+.agent-step-details pre {
+  max-height: 10rem;
+  margin: 5px 0 0;
+  padding: 7px;
+  overflow: auto;
+  border-radius: 4px;
+  background: #f1f4ef;
+  color: #59675b;
+  font: 0.65rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
 }
 
 .run-list b {

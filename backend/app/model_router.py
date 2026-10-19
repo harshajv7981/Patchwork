@@ -32,6 +32,15 @@ def model_for(task: str) -> str:
         }
         return task_models.get(task, task_models["coding"])
 
+    if provider == "gemini":
+        default_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        task_models = {
+            "triage": os.getenv("GEMINI_TRIAGE_MODEL", default_model),
+            "coding": os.getenv("GEMINI_CODING_MODEL", default_model),
+            "review": os.getenv("GEMINI_REVIEW_MODEL", default_model),
+        }
+        return task_models.get(task, task_models["coding"])
+
     defaults = {
         "triage": os.getenv("OLLAMA_MODEL", "qwen3.5:9b"),
         "coding": os.getenv("OLLAMA_CODING_MODEL", os.getenv("OLLAMA_MODEL", "qwen3.5:9b")),

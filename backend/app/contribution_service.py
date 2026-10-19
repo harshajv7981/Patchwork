@@ -3,7 +3,34 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from typing import Any
+
+from langdetect import DetectorFactory, LangDetectException, detect
+
+
+DetectorFactory.seed = 0
+
+
+ISSUE_QUEUE_MAX_AGE_DAYS = 5
+
+
+def recent_issue_cutoff() -> datetime:
+    return datetime.utcnow() - timedelta(days=ISSUE_QUEUE_MAX_AGE_DAYS)
+
+
+def is_english_issue(title: str, body: str | None = None) -> bool:
+    return is_english_text(f"{title}\n{body or ''}")
+
+
+def is_english_text(text: str) -> bool:
+    text = text.strip()
+    if not text:
+        return True
+    try:
+        return detect(text) == "en"
+    except LangDetectException:
+        return False
 
 
 def score_issue_acceptance(

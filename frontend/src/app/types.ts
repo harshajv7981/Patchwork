@@ -111,6 +111,8 @@ export type AgentStep = {
   input: Record<string, unknown>
   output: Record<string, unknown>
   error?: string
+  started_at?: string
+  completed_at?: string
 }
 
 export type FeatureSuggestion = {
@@ -124,6 +126,8 @@ export type FeatureSuggestion = {
   implementation_plan: string
   suggested_files: string[]
   status: string
+  contribution_source?: string
+  review_required?: boolean
   ai_analysis?: string
   pr_title?: string
   pr_body?: string

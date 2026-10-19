@@ -382,7 +382,109 @@ class GroqClient:
         )
 
 
-def get_llm_client() -> AsyncClient | OpenRouterClient | GroqClient:
+class GeminiClient:
+    def __init__(self, transport: httpx.AsyncBaseTransport | None = None):
+        self.api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        self.base_url = os.getenv(
+            "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai"
+        ).rstrip("/")
+        self.transport = transport
+
+    def _headers(self) -> dict[str, str]:
+        if not self.api_key:
+            raise RuntimeError(
+                "LLM_PROVIDER=gemini requires GEMINI_API_KEY in .env"
+            )
+
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+    async def generate(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        think: bool = False,
+        options: dict[str, Any] | None = None,
+        system: str | None = None,
+    ) -> SimpleNamespace:
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        options = options or {}
+        payload: dict[str, Any] = {"model": model, "messages": messages}
+
+        if "temperature" in options:
+            payload["temperature"] = options["temperature"]
+        if "num_predict" in options:
+            payload["max_tokens"] = options["num_predict"]
+        elif "max_tokens" in options:
+            payload["max_tokens"] = options["max_tokens"]
+
+        max_attempts = max(1, int(os.getenv("GEMINI_MAX_ATTEMPTS", "3")))
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0, connect=15.0),
+            transport=self.transport,
+        ) as client:
+            for attempt in range(1, max_attempts + 1):
+                response = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=self._headers(),
+                    json=payload,
+                )
+
+                try:
+                    data = response.json()
+                except ValueError:
+                    data = {}
+
+                if response.is_error:
+                    error = data.get("error", {})
+                    error_detail = error.get("message") if isinstance(error, dict) else str(error)
+
+                    if attempt < max_attempts and response.status_code in {408, 429, 500, 503}:
+                        await asyncio.sleep(0.5 * (2 ** (attempt - 1)))
+                        continue
+
+                    raise RuntimeError(f"Gemini request failed (HTTP {response.status_code}): {error_detail}")
+
+                choices = data.get("choices")
+                if not choices:
+                    raise RuntimeError("Gemini returned no completion choices")
+
+                content = choices[0].get("message", {}).get("content")
+                if not isinstance(content, str) or not content.strip():
+                    raise RuntimeError("Gemini returned no usable final text")
+
+                return SimpleNamespace(
+                    response=content,
+                    model=data.get("model", model),
+                    reasoning_details=None,
+                )
+
+            raise RuntimeError("Gemini request failed after all retry attempts")
+
+    async def list(self) -> SimpleNamespace:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(20.0, connect=10.0),
+            transport=self.transport,
+        ) as client:
+            response = await client.get(
+                f"{self.base_url}/models",
+                headers=self._headers(),
+            )
+            if response.is_error:
+                raise RuntimeError(f"Gemini model check failed with HTTP {response.status_code}")
+            return SimpleNamespace(
+                models=[SimpleNamespace(model=item.get("id", "")) for item in response.json().get("data", [])]
+            )
+
+
+def get_llm_client() -> AsyncClient | OpenRouterClient | GroqClient | GeminiClient:
     provider = provider_name()
     if provider == "ollama":
         return AsyncClient(host=os.getenv("OLLAMA_HOST", "http://localhost:11434"))
@@ -390,4 +492,6 @@ def get_llm_client() -> AsyncClient | OpenRouterClient | GroqClient:
         return OpenRouterClient()
     if provider == "groq":
         return GroqClient()
+    if provider == "gemini":
+        return GeminiClient()
     raise RuntimeError(f"Unsupported LLM_PROVIDER: {provider}")
