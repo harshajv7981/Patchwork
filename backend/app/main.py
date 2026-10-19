@@ -5,7 +5,6 @@ import hashlib
 import hmac
 import logging
 import time
-import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -38,7 +37,7 @@ from app.schemas import *
 from app.agent_routes import router as agent_router
 from app.pr_routes import router as pr_router
 from app.sandbox_routes import router as sandbox_router
-from app.feature_routes import router as feature_router
+from app.feature_routes import _format_time_ago, router as feature_router
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -311,18 +310,6 @@ async def list_issues(
 
     if difficulty:
         query = query.where(IssueModel.difficulty == difficulty)
-
-    total_query = select(func.count(IssueModel.id)).where(
-        IssueModel.is_suitable == True,
-        IssueModel.updated_at >= recent_cutoff,
-    )
-    if repository:
-        total_query = total_query.where(IssueModel.repository == repository)
-    if difficulty:
-        total_query = total_query.where(IssueModel.difficulty == difficulty)
-    total = await db.scalar(total_query) or 0
-    if response is not None:
-        response.headers["X-Total-Count"] = str(total)
 
     query = query.order_by(desc(IssueModel.suitability_score))
 
@@ -756,28 +743,6 @@ async def create_pr_for_issue(
         ai_summary=pr_record.ai_summary,
         created_at=_format_datetime(pr_record.created_at),
     )
-
-
-def _format_time_ago(dt) -> str:
-    from datetime import datetime, timezone
-
-    now = datetime.now(timezone.utc)
-    dt_utc = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
-
-    delta = now - dt_utc
-
-    days = delta.days
-    hours = delta.seconds // 3600
-    minutes = (delta.seconds % 3600) // 60
-
-    if days > 0:
-        return f"{days} day{'s' if days > 1 else ''} ago"
-    elif hours > 0:
-        return f"{hours} hour{'s' if hours > 1 else ''} ago"
-    elif minutes > 0:
-        return f"{minutes} minute{'s' if minutes > 1 else ''} ago"
-    else:
-        return "just now"
 
 
 def _format_datetime(dt) -> str:

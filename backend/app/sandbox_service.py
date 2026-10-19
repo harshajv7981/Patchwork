@@ -147,8 +147,6 @@ def _run_cmd(
         full_cmd = cmd
 
     resource_prefix: list[str] = []
-    if runtime == "process" and sys.platform != "win32" and shutil.which("ulimit") is not None:
-        pass
     if runtime == "process" and (sys.platform == "darwin" or sys.platform.startswith("linux")):
         mem_kb = MAX_SANDBOX_MEMORY_MB * 1024
         resource_prefix = ["bash", "-c",

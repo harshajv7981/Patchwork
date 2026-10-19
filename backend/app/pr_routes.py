@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, select
@@ -13,11 +12,11 @@ from app.database import get_db
 from app.models import PullRequest as PRModel
 from app.schemas import AgentApprovalRequest, CIStatusResponse, PullRequestResponse
 
+from app.agent_routes import _format_datetime
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-def _format_datetime(value: datetime | None) -> str:
-    return value.isoformat() if value else ""
 
 @router.get("/api/pull-requests", response_model=list[PullRequestResponse])
 async def list_pull_requests(
