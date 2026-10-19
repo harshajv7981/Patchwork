@@ -76,7 +76,7 @@ fi
 # Setup frontend
 echo ""
 echo "🎨 Setting up frontend..."
-cd frontend
+cd frontend-lovable
 npm install
 cd ..
 
@@ -102,6 +102,6 @@ echo "📋 Next steps:"
 echo "   1. Edit .env and add your GITHUB_TOKEN (optional but recommended)"
 echo "   2. Start PostgreSQL if not running"
 echo "   3. Start the API: uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000"
-echo "   4. Start the frontend: cd frontend && npm run dev"
-echo "   5. Open http://localhost:5173"
+echo "   4. Start the frontend: cd frontend-lovable && npm run dev"
+echo "   5. Open http://localhost:8080"
 echo ""

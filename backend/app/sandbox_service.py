@@ -16,6 +16,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import tomllib
 import uuid
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,10 @@ logger = logging.getLogger(__name__)
 
 SANDBOX_RUNTIME = os.getenv("SANDBOX_RUNTIME", "docker").lower()
 SANDBOX_DOCKER_IMAGE = os.getenv("SANDBOX_DOCKER_IMAGE", "patchwork-sandbox:latest")
+PIP_CACHE_DIR = Path.home() / ".patchwork" / "pip-cache"
+DOCKER_VENV_DIR = ".patchwork-venv"
+DOCKER_VENV_PYTHON = f"/workspace/{DOCKER_VENV_DIR}/bin/python"
+TEST_EXTRAS = ("dev", "test", "tests", "testing")
 
 # Sandbox interpreter can target an older project-compatible Python without
 # changing the interpreter running the Patchwork backend.
@@ -119,8 +124,10 @@ def _run_cmd(
 ) -> tuple[int, str, str, float]:
     """Execute command with timeout and return (exit_code, stdout, stderr, duration).
 
-    In Docker mode `network=True` enables outbound network for that one run (dependency
-    installs only); tests always run with the network off.
+    In Docker mode `network=True` enables outbound network for that one run. It is only
+    used for the wheel-only dependency install, so it runs outside the repo: no repo
+    paths on sys.path, no repo pip config, and a shared pip download cache that no
+    repo code ever runs next to. Tests always run with the network off.
     """
     runtime = (runtime or SANDBOX_RUNTIME).lower()
     env = _make_sandbox_env(cwd, env_extra)
@@ -129,29 +136,39 @@ def _run_cmd(
         return 1, "", f"Unsupported sandbox runtime: {runtime}", 0.0
 
     if runtime == "docker":
-        # Map the host bootstrap interpreter to the image's `python`; leave a
-        # workspace-relative venv interpreter (e.g. .patchwork-venv/bin/python) as-is so
-        # runc resolves it against -w /workspace.
-        first = cmd[0]
-        executable = "python" if (Path(first).is_absolute() and Path(first).name.startswith("python")) else first
-        cmd = [executable, *cmd[1:]]
-        tmpfs = "/tmp:rw,nosuid,size=256m" if network else "/tmp:rw,noexec,nosuid,size=64m"
+        # The host interpreter doesn't exist in the image; use the image's `python`.
+        if cmd[0] == VENV_PYTHON:
+            cmd = ["python", *cmd[1:]]
+        if network:
+            PIP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            run_args = [
+                "--network=bridge",
+                "--tmpfs", "/tmp:rw,nosuid,size=256m",
+                "-v", f"{PIP_CACHE_DIR}:/pip-cache:rw",
+                "-w", "/tmp",
+                "-e", "HOME=/tmp",
+                "-e", "PIP_CACHE_DIR=/pip-cache",
+                "-e", "PIP_CONFIG_FILE=/dev/null",
+            ]
+        else:
+            run_args = [
+                "--network=none",
+                "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+                "-w", "/workspace",
+                "-e", "HOME=/workspace",
+                "-e", "PYTHONPATH=/workspace",
+            ]
         full_cmd = [
             "docker", "run", "--rm",
-            "--network=bridge" if network else "--network=none",
             "--read-only",
             "--cap-drop=ALL",
             "--security-opt", "no-new-privileges",
             "--pids-limit", "128",
             "--memory", f"{MAX_SANDBOX_MEMORY_MB}m",
             "--cpus", "1",
-            "--tmpfs", tmpfs,
             "-v", f"{cwd.resolve()}:/workspace:rw",
-            "-w", "/workspace",
-            "-e", "PYTHONPATH=/workspace",
             "-e", "PYTHONDONTWRITEBYTECODE=1",
-            "-e", "HOME=/workspace",
-            "-e", "PIP_NO_CACHE_DIR=1",
+            *run_args,
             SANDBOX_DOCKER_IMAGE,
             *cmd,
         ]
@@ -320,51 +337,190 @@ def _prepare_docker_test_environment(
     requirement_files: list[Path],
     editable_projects: list[Path],
 ) -> tuple[str, str, str | None]:
-    """Create a project venv inside the container and install its deps with the network on.
+    """Build the /workspace venv for the offline test run without running repo code online.
 
-    Uses only `python -m venv` + pip, so it needs nothing in the sandbox image beyond a
-    Python with venv and pip; the venv interpreter is returned as a /workspace-relative
-    path so the (offline) pytest run executes it inside the container.
+    The network run creates the venv and installs only prebuilt wheels (installing a
+    wheel runs no package code), from requirement specs parsed here on the host. Local
+    projects are then installed in a separate offline run with --no-deps --no-index, so
+    their build scripts never get network access.
 
-    ponytail: assumes the image has python3 (venv+pip) and bridge networking is available;
-    a 512MB cap or /tmp build-exec limits can still fail very heavy installs. Upgrade path:
-    bake common deps into the image, or raise --memory for the install run.
+    ponytail: dependencies must be declared statically (requirements files or a PEP 621
+    [project] table); setup.py-only, dynamic or Poetry-table deps are reported as a setup
+    error, and packages that only ship sdists fail the wheel-only install. Heavy installs
+    can still hit the 512MB cap. Upgrade path: bake common deps into the image.
     """
-    manager = "pip (docker)"
-    venv_python = ".patchwork-venv/bin/python"  # relative to /workspace
-    code, out, err, _ = _run_cmd(
-        ["python", "-m", "venv", ".patchwork-venv"],
-        cwd=sandbox_dir,
-        timeout=120,
-        runtime="docker",
-        network=True,
+    manager = "pip (docker, wheels only)"
+    # Resolved paths throughout, so projects found via requirements lines compare equal.
+    sandbox_dir = sandbox_dir.resolve()
+    # Local projects to install offline, with the extras requested for each.
+    projects: dict[Path, set[str]] = {
+        project_dir.resolve(): set()
+        for project_dir in editable_projects or (
+            [sandbox_dir] if pyproject.is_file() and not requirement_files else []
+        )
+    }
+    specs = ["pytest"]
+    seen: set[Path] = set()
+    for requirement_file in requirement_files:
+        specs += _wheel_requirements(requirement_file, sandbox_dir, seen, projects)
+    for project_dir, requested_extras in projects.items():
+        project_specs = _static_project_requirements(project_dir, sandbox_dir, requested_extras)
+        if project_specs is None:
+            return DOCKER_VENV_PYTHON, manager, (
+                f"{project_dir.relative_to(sandbox_dir).as_posix()}/pyproject.toml does not declare "
+                "its dependencies statically; Docker mode installs only declared wheels and never "
+                "runs a project's build scripts with network access."
+            )
+        specs += project_specs
+
+    # Repo code (linters, terminal check) already ran in this tree; never reuse a venv it planted.
+    venv_dir = sandbox_dir / DOCKER_VENV_DIR
+    if venv_dir.is_symlink() or venv_dir.is_file():
+        venv_dir.unlink()
+    elif venv_dir.exists():
+        shutil.rmtree(venv_dir)
+
+    script = (
+        f"python -I -m venv /workspace/{DOCKER_VENV_DIR} && exec \"$0\" -I -m pip install "
+        "--disable-pip-version-check --only-binary=:all: \"$@\""
     )
-    if code != 0:
-        return venv_python, manager, f"Could not create the Docker test venv:\n{(out + err)[-3000:]}"
-
-    install = [venv_python, "-m", "pip", "install", "--disable-pip-version-check", "pytest"]
-    if editable_projects:
-        for project_dir in editable_projects:
-            install.extend(["-e", f"{project_dir.relative_to(sandbox_dir)}[dev]"])
-    elif requirement_files:
-        for requirement_file in requirement_files:
-            install.extend(["-r", str(requirement_file.relative_to(sandbox_dir))])
-    elif pyproject.is_file():
-        install.extend(["-e", ".[dev]"])
-
     code, out, err, _ = _run_cmd(
-        install,
+        ["sh", "-c", script, DOCKER_VENV_PYTHON, *dict.fromkeys(specs)],
         cwd=sandbox_dir,
         timeout=SANDBOX_DEPENDENCY_TIMEOUT_SECONDS,
         runtime="docker",
         network=True,
     )
+    if code == 0 and projects:
+        editables = [
+            arg
+            for project_dir in projects
+            for arg in ("-e", f"/workspace/{project_dir.relative_to(sandbox_dir).as_posix()}")
+        ]
+        code, out, err, _ = _run_cmd(
+            [DOCKER_VENV_PYTHON, "-m", "pip", "install", "--disable-pip-version-check",
+             "--no-deps", "--no-build-isolation", "--no-index", *editables],
+            cwd=sandbox_dir,
+            timeout=SANDBOX_DEPENDENCY_TIMEOUT_SECONDS,
+            runtime="docker",
+        )
     if code != 0:
         detail = (err or out or f"installer exited with status {code}").strip()
         logger.warning("Docker sandbox dependency installation failed")
-        return venv_python, manager, f"Dependency installation failed in the Docker sandbox:\n{detail[-3000:]}"
+        return DOCKER_VENV_PYTHON, manager, f"Dependency installation failed in the Docker sandbox:\n{detail[-3000:]}"
     logger.info("Docker sandbox dependencies installed")
-    return venv_python, manager, None
+    return DOCKER_VENV_PYTHON, manager, None
+
+
+def _wheel_spec(requirement: str) -> str | None:
+    """Return `name[extras]<specs>[; marker]` if the line is a plain index requirement.
+
+    Editable, URL, path and option lines return None: they would make pip build repo
+    code or talk to another index while the network is on.
+    """
+    spec, _, marker = requirement.partition(";")
+    spec = spec.replace(" ", "")
+    if not PACKAGE_SPEC_RE.fullmatch(spec):
+        return None
+    return f"{spec}; {marker.strip()}" if marker.strip() else spec
+
+
+def _inside(path: Path, root: Path) -> Path | None:
+    """Resolve `path` (following symlinks) and return it only if it stays inside `root`.
+
+    Repo code has already run in the sandbox, so any file there may be a symlink to a
+    host file; the host must never read through one.
+    """
+    resolved = path.resolve()
+    return resolved if resolved.is_relative_to(root.resolve()) else None
+
+
+def _wheel_requirements(
+    requirement_file: Path,
+    root: Path,
+    seen: set[Path],
+    projects: dict[Path, set[str]],
+) -> list[str]:
+    """Plain requirement specs from a requirements file, following `-r` includes inside the repo.
+
+    Local project lines (`-e .[test]`, `./pkg`) are added to `projects` with their extras,
+    to be installed offline; other non-index lines are dropped.
+    """
+    requirement_file = _inside(requirement_file, root)
+    if requirement_file is None or requirement_file in seen or not requirement_file.is_file():
+        return []
+    seen.add(requirement_file)
+    specs: list[str] = []
+    text = requirement_file.read_text(encoding="utf-8", errors="replace").replace("\\\n", " ")
+    for raw in text.splitlines():
+        line = raw.split(" #")[0].split(" --hash")[0].strip()
+        if not line or line.startswith("#"):
+            continue
+        include = re.fullmatch(r"(?:-r|--requirement)[=\s]*(\S+)", line)
+        if include:
+            specs += _wheel_requirements(requirement_file.parent / include.group(1), root, seen, projects)
+            continue
+        # pip resolves local paths in requirements files against its working dir, the repo root.
+        local = re.fullmatch(r"(?:(?:-e|--editable)[=\s]*)?(\.[^\s\[]*)(?:\[([^\]]*)\])?", line)
+        if local:
+            project_dir = _inside(root / local.group(1), root)
+            if project_dir and (project_dir / "pyproject.toml").is_file():
+                extras = {extra.strip() for extra in (local.group(2) or "").split(",") if extra.strip()}
+                projects[project_dir] = projects.get(project_dir, set()) | extras
+            continue
+        spec = _wheel_spec(line)
+        if spec:
+            specs.append(spec)
+    return specs
+
+
+def _static_project_requirements(
+    project_dir: Path,
+    root: Path,
+    requested_extras: set[str] = frozenset(),
+) -> list[str] | None:
+    """Build requirements plus runtime, test-extra and requested-extra deps from pyproject.toml, read as data.
+
+    Returns None when the deps are not declared statically (no [project] table, or
+    dependencies marked dynamic), since finding them would mean running project code.
+    """
+    pyproject = _inside(project_dir / "pyproject.toml", root)
+    if pyproject is None:
+        return None
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    project = data.get("project")
+    if not isinstance(project, dict) or "dependencies" in project.get("dynamic", []):
+        return None
+
+    def canonical(name: str) -> str:
+        return re.sub(r"[-_.]+", "-", name).lower()
+
+    own_name = canonical(str(project.get("name", "")))
+    extras = project.get("optional-dependencies", {})
+    pending = list(data.get("build-system", {}).get("requires", ["setuptools>=40.8.0"]))
+    pending += project.get("dependencies", [])
+    used_extras = set(TEST_EXTRAS) | requested_extras
+    for extra in used_extras:
+        pending += extras.get(extra, [])
+
+    specs: list[str] = []
+    while pending:
+        spec = _wheel_spec(str(pending.pop()))
+        if spec is None:
+            continue
+        match = re.match(r"([A-Za-z0-9_.-]+)(?:\[([^\]]*)\])?", spec)
+        if canonical(match.group(1)) == own_name:
+            # Self-reference like "mypkg[test]": inline those extras instead of fetching mypkg.
+            for extra in (match.group(2) or "").split(","):
+                if extra and extra not in used_extras:
+                    used_extras.add(extra)
+                    pending += extras.get(extra, [])
+            continue
+        specs.append(spec)
+    return specs
 
 
 def _prepare_test_environment(
@@ -795,7 +951,7 @@ async def run_sandbox_validation(
         raise ValueError(f"Unsupported sandbox runtime: {runtime}")
 
     # 1. Fetch repo and 2. copy into an isolated sandbox dir, under the per-repo lock so
-    # a concurrent PR push (checkout/cleanup) can't corrupt the tree we copy.
+    # a concurrent run's clone/update can't corrupt the tree we copy.
     sandbox_id = str(uuid.uuid4())[:8]
     temp_dir = Path(tempfile.gettempdir()) / f"patchwork_sandbox_{sandbox_id}"
 

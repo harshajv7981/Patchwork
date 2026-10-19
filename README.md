@@ -77,7 +77,7 @@
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │                               React 19 + Vite Dashboard                                │
-│                     (Port 5173 • Dark Mode • Lucide Icons • Tailwind)                  │
+│                     (Port 8080 • Dark Mode • Lucide Icons • Tailwind)                  │
 └───────────────────────────────────────────┬────────────────────────────────────────────┘
                                             │ HTTP / JSON REST API
 ┌───────────────────────────────────────────▼────────────────────────────────────────────┐
@@ -113,12 +113,12 @@ Patchwork/
 │       ├── sandbox_service.py   # Isolated workspace runner, pytest/linters execution & AI self-healing
 │       ├── github_service.py    # GitHub REST API client for repos, issues, and PR dispatch
 │       └── scheduler.py         # Autonomous discovery orchestration & APScheduler jobs
-├── frontend/
+├── frontend-lovable/
 │   ├── src/
-│   │   ├── App.tsx              # Full dashboard UI with 5 tabs, modals, and Sandbox Report Card
-│   │   ├── App.css              # Custom dark-theme styling, glassmorphism, and sandbox components
-│   │   └── main.tsx             # React DOM entry point
-│   ├── package.json             # Frontend dependencies (React 19, Lucide icons, Vite)
+│   │   ├── routes/              # TanStack Router pages (discover, ideas, issues, pulls, runs, settings)
+│   │   ├── components/patchwork/workspace.tsx  # Dashboard workspace UI
+│   │   └── lib/patchwork-data.ts               # API client for the FastAPI backend
+│   ├── package.json             # Frontend dependencies (React 19, TanStack, Tailwind, Vite)
 │   └── vite.config.ts           # Vite configuration
 ├── requirements.txt             # Python backend dependencies
 ├── .env                         # Environment configuration (GitHub token, Ollama, Database URL)
@@ -238,19 +238,19 @@ The FastAPI backend will be available at **`http://localhost:8000`** (Interactiv
 In a separate terminal:
 
 ```bash
-cd frontend
+cd frontend-lovable
 npm install
 npm run dev
 ```
 
-The React dashboard will be live at **`http://localhost:5173`**.
+The React dashboard will be live at **`http://localhost:8080`**.
 
 ---
 
 ## 🧪 End-to-End Workflow Walkthrough
 
 1. **Discover Repositories**:
-   - Open `http://localhost:5173` and click **"Run Discovery"** or browse the 50+ automatically discovered Python repositories.
+   - Open `http://localhost:8080` and click **"Run Discovery"** or browse the 50+ automatically discovered Python repositories.
 2. **Proactive Feature Ideation**:
    - On any repository card (e.g., `faif/python-patterns`), click **"Suggest Ideas"**.
    - Switch to the **"Feature Ideas"** tab to view generated architectural proposals with impact and complexity ratings.
@@ -275,8 +275,8 @@ The React dashboard will be live at **`http://localhost:5173`**.
 ## 🔒 Safety & Isolation Philosophy
 
 - **Provider choice**: Ollama runs locally. OpenRouter sends prompts and repository context to a hosted model provider; use it only for repositories and code you are comfortable sharing under the provider's terms.
-- **Selectable Sandbox Isolation**: Defaults to `SANDBOX_RUNTIME=docker` (build `Dockerfile.sandbox` as `patchwork-sandbox:latest` first): a container with a read-only root filesystem, dropped capabilities, no-new-privileges, CPU/memory/PID limits, strict timeouts, and automatic cleanup. Dependency installs run in a short-lived container with networking enabled; the test run itself always executes with `--network=none`.
-  - **Credential Scrubbing**: `GITHUB_TOKEN`, `DATABASE_URL`, API keys, and any environment variable matching `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL` patterns are stripped from the sandbox environment.
+- **Selectable Sandbox Isolation**: Defaults to `SANDBOX_RUNTIME=docker` (build `Dockerfile.sandbox` as `patchwork-sandbox:latest` first): a container with a read-only root filesystem, dropped capabilities, no-new-privileges, CPU/memory/PID limits, strict timeouts, and automatic cleanup. Dependency installs run in a short-lived container with networking enabled that installs only prebuilt wheels (no repository code runs while the network is on); the project itself is then installed offline, and the test run always executes with `--network=none`. Dependencies must be declared in requirements files or a PEP 621 `[project]` table.
+  - **Credential Scrubbing**: `GITHUB_TOKEN`, `DATABASE_URL`, API keys, and any environment variable matching `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, or `KEY` patterns are stripped from the sandbox environment.
   - **Memory Limits**: `ulimit -v` caps sandbox process virtual memory at 512 MB on Linux/macOS.
   - **Output Caps**: stdout/stderr are truncated at 1 MB to prevent runaway output.
    - **Note**: Process mode is not suitable for untrusted code. Use Docker mode for production and verify the image before accepting external repositories.

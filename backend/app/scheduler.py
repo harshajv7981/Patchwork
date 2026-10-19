@@ -6,16 +6,19 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 from app.database import AsyncSessionLocal
 from app.models import Repository as RepoModel, Issue as IssueModel, Run as RunModel
+from app.agent_helpers import spawn
 from app.github_service import GitHubService
 
 DISCOVERY_REPOSITORY_LIMIT = 10
+DAILY_RUN_NAME = "Daily repository discovery"
+MANUAL_RUN_NAME = "Manual repository discovery"
+DISCOVERY_RUN_NAMES = (DAILY_RUN_NAME, MANUAL_RUN_NAME)
 
 
 class DiscoveryScheduler:
     def __init__(self):
         self.scheduler = AsyncIOScheduler()
         self.github_service = GitHubService()
-        self._tasks: set[asyncio.Task] = set()
 
     def start(self):
         """Start the scheduler with daily discovery at 9 AM IST (3:30 AM UTC)."""
@@ -37,7 +40,7 @@ class DiscoveryScheduler:
     async def run_daily_discovery(self):
         """Scheduled entry point; skips the day if a run is already in progress."""
         try:
-            run_id = await self._create_run("Daily repository discovery")
+            run_id = await self._create_run(DAILY_RUN_NAME)
         except RuntimeError as error:
             print(f"Skipping daily discovery: {error}")
             return
@@ -45,11 +48,8 @@ class DiscoveryScheduler:
 
     async def run_discovery_now(self) -> int:
         """Trigger discovery immediately and return the run ID."""
-        run_id = await self._create_run("Manual repository discovery")
-        # Hold a reference so the loop's weak one can't let the task be collected mid-run.
-        task = asyncio.create_task(self._execute_discovery(run_id))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        run_id = await self._create_run(MANUAL_RUN_NAME)
+        spawn(self._execute_discovery(run_id))
         return run_id
 
     async def _create_run(self, name: str) -> int:
@@ -58,7 +58,7 @@ class DiscoveryScheduler:
             # share this table but must not gate discovery.
             running = await session.execute(
                 select(RunModel.id)
-                .where(RunModel.status == "running", RunModel.name.like("%discovery%"))
+                .where(RunModel.status == "running", RunModel.name.in_(DISCOVERY_RUN_NAMES))
                 .limit(1)
             )
             if running.scalar_one_or_none() is not None:
