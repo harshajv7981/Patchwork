@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import shutil
 import subprocess
 from collections import defaultdict
 from pathlib import Path
@@ -16,8 +15,8 @@ logger = logging.getLogger(__name__)
 MAX_FILE_CHARS = 6000
 MAX_FILES = 4
 
-# Sandbox copies and PR pushes share one clone dir per repo; serialize access so a
-# push's checkout/cleanup can't interleave with another run's copy.
+# Sandbox runs share one clone dir per repo; serialize clone/update + copy so one run's
+# `git reset --hard` (or first clone) can't interleave with another run's copy.
 # ponytail: in-process only (asyncio.Lock) — a multi-worker deploy needs a real lock.
 _repo_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
@@ -25,6 +24,18 @@ _repo_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 def repo_lock(repo_full_name: str) -> asyncio.Lock:
     """Return the shared lock guarding this repo's local clone."""
     return _repo_locks[repo_full_name]
+
+
+# The event loop holds only a weak reference to tasks; keep fire-and-forget runs
+# alive until they finish so they can't be garbage-collected mid-run.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def spawn(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -62,28 +73,6 @@ def _clone_or_update(repo_full_name: str) -> Path:
             pass  # stale cache is still usable
 
     return local
-
-
-def _cleanup_repo_cache(repo_full_name: str, cache_dir: Path | None = None) -> None:
-    """Remove the supported cached clones after a pull request is opened."""
-    parts = repo_full_name.split("/")
-    if len(parts) != 2 or any(part in {"", ".", ".."} for part in parts):
-        logger.warning("Skipping clone cleanup for invalid repository name")
-        return
-
-    owner, name = parts
-    cache_dir = cache_dir or REPOS_CACHE_DIR
-    cache_paths = (
-        cache_dir / owner / name,
-        cache_dir / f"{owner}__{name}",
-    )
-    for cache_path in cache_paths:
-        try:
-            shutil.rmtree(cache_path)
-        except FileNotFoundError:
-            pass
-        except OSError:
-            logger.warning("Could not remove cached repository clone path=%s", cache_path, exc_info=True)
 
 
 def _repo_file_tree(local: Path, max_files: int = 200) -> str:

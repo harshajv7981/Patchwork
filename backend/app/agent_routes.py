@@ -1,4 +1,3 @@
-import asyncio
 import json
 import uuid
 from datetime import datetime
@@ -7,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_helpers import spawn
 from app.contribution_agent import ContributionAgent
 from app.contribution_service import is_english_issue, recent_issue_cutoff
 from app.database import AsyncSessionLocal, get_db
@@ -25,17 +25,6 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/api")
-
-# Keep a reference to each fire-and-forget run; the event loop only holds a weak one,
-# so without this the task can be garbage-collected mid-run.
-_background_tasks: set[asyncio.Task] = set()
-
-
-def _spawn(coro) -> asyncio.Task:
-    task = asyncio.create_task(coro)
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
-    return task
 
 
 def _format_datetime(value: datetime | None) -> str:
@@ -100,7 +89,7 @@ async def start_agent_run(
         if run.status == "failed":
             run.failure_reason = None
             await db.commit()
-        _spawn(_execute_agent_run(run.id))
+        spawn(_execute_agent_run(run.id))
     return _agent_run_response(run)
 
 
@@ -156,7 +145,7 @@ async def start_next_agent_run(db: AsyncSession = Depends(get_db)) -> AgentRunRe
     run = await ContributionAgent(db).start(
         candidates[0]["id"], f"autonomous:issue:{candidates[0]['id']}"
     )
-    _spawn(_execute_agent_run(run.id))
+    spawn(_execute_agent_run(run.id))
     return _agent_run_response(run)
 
 
@@ -222,7 +211,7 @@ async def resume_agent_run(run_id: int, db: AsyncSession = Depends(get_db)) -> A
         raise HTTPException(status_code=404, detail="Agent run not found")
     if run.status not in {"failed", "queued"}:
         raise HTTPException(status_code=409, detail=f"Run is not resumable from {run.status}")
-    _spawn(_execute_agent_run(run.id))
+    spawn(_execute_agent_run(run.id))
     return _agent_run_response(run)
 
 

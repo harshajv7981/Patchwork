@@ -23,7 +23,6 @@ async def run_sandbox_endpoint(body: SandboxVerifyRequest) -> SandboxVerifyRespo
             repo_full_name=body.repo_full_name,
             title=f"Sandbox validation for {body.repo_full_name}",
             file_rewrites=body.file_rewrites,
-            runtime=body.runtime,
             terminal_command=body.terminal_command,
         )
         return SandboxVerifyResponse(**result)
@@ -49,7 +48,6 @@ async def verify_issue_patch(
             repo_full_name=issue.repository,
             title=issue.title,
             file_rewrites=body.file_rewrites,
-            runtime=body.runtime,
             terminal_command=body.terminal_command,
         )
         issue.sandbox_result = json.dumps(result)
@@ -77,7 +75,6 @@ async def verify_feature_code(
             repo_full_name=feature.repository,
             title=feature.title,
             file_rewrites=body.file_rewrites,
-            runtime=body.runtime,
             terminal_command=body.terminal_command,
         )
         feature.sandbox_result = json.dumps(result)

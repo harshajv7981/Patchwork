@@ -12,6 +12,8 @@ import re
 import asyncio
 import ast
 import logging
+import shutil
+import tempfile
 import textwrap
 import time
 from pathlib import Path
@@ -37,9 +39,7 @@ def _json_options(options: dict) -> dict:
 
 from app.agent_helpers import (
     MAX_FILES,
-    REPOS_CACHE_DIR,
     _clean_analysis_text,
-    _cleanup_repo_cache as _cleanup_repo_cache_impl,
     _clone_or_update,
     _extract_json_block,
     _parse_file_rewrites,
@@ -47,12 +47,7 @@ from app.agent_helpers import (
     _repo_file_tree,
     _run,
     _safe_repo_path,
-    repo_lock,
 )
-
-
-def _cleanup_repo_cache(repo_full_name: str) -> None:
-    _cleanup_repo_cache_impl(repo_full_name, REPOS_CACHE_DIR)
 
 # ---------------------------------------------------------------------------
 # public API
@@ -557,19 +552,21 @@ async def open_pull_request(
     fork = await asyncio.to_thread(_get_or_create_fork, user, upstream)
     logger.info("PR creation fork ready repo=%s fork=%s", repo_full_name, fork.full_name)
 
-    async with repo_lock(repo_full_name):
-        try:
-            local = await asyncio.to_thread(_clone_or_update, repo_full_name)
-            await asyncio.to_thread(
-                _push_branch, local, fork.full_name, upstream.default_branch, branch, file_rewrites, commit_msg
-            )
-            pr = await asyncio.to_thread(
-                _open_github_pr,
-                upstream, fork, branch, upstream.default_branch, pr_title, pr_body
-            )
-        finally:
-            # The clone's fork remote URL embeds GITHUB_TOKEN; never leave it on disk.
-            await asyncio.to_thread(_cleanup_repo_cache, repo_full_name)
+    # Push from a throwaway clone so the shared repo cache (read by analysis and sandbox
+    # runs) is never switched to another branch or deleted under them.
+    local = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="patchwork_pr_"))
+    try:
+        await asyncio.to_thread(
+            _push_branch, local, repo_full_name, fork.full_name, upstream.default_branch,
+            branch, file_rewrites, commit_msg,
+        )
+        pr = await asyncio.to_thread(
+            _open_github_pr,
+            upstream, fork, branch, upstream.default_branch, pr_title, pr_body
+        )
+    finally:
+        # The clone's fork remote URL embeds GITHUB_TOKEN; never leave it on disk.
+        await asyncio.to_thread(shutil.rmtree, local, True)
     logger.info("PR creation completed repo=%s pr=%s", repo_full_name, pr.number)
 
     return {
@@ -582,19 +579,21 @@ async def open_pull_request(
 
 def _push_branch(
     local: Path,
+    repo_full_name: str,
     fork_full_name: str,
     default_branch: str,
     branch: str,
     file_rewrites: dict[str, str],
     commit_msg: str,
 ) -> None:
-    """Commit exactly the given rewrites on a fresh branch and force-push it to the fork."""
+    """Clone upstream into `local`, commit exactly the given rewrites on a fresh branch, force-push it to the fork."""
+    _run([
+        "git", "clone", "--depth", "50", "--branch", default_branch,
+        f"https://github.com/{repo_full_name}.git", str(local),
+    ])
     fork_remote_url = f"https://x-access-token:{GITHUB_TOKEN}@github.com/{fork_full_name}.git"
-    _run(["git", "remote", "remove", "fork"], cwd=local, check=False)
     _run(["git", "remote", "add", "fork", fork_remote_url], cwd=local)
-
-    _run(["git", "fetch", "origin"], cwd=local)
-    _run(["git", "checkout", "-B", branch, f"origin/{default_branch}"], cwd=local)
+    _run(["git", "checkout", "-b", branch], cwd=local)
 
     for rel_path, content in file_rewrites.items():
         full_path = _safe_repo_path(local, rel_path)
@@ -603,7 +602,6 @@ def _push_branch(
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(content)
 
-    # Stage only our paths so leftovers from earlier attempts never get committed.
     paths = list(file_rewrites)
     _run(["git", "add", "--", *paths], cwd=local)
     if not _run(["git", "diff", "--cached", "--name-only"], cwd=local).strip():

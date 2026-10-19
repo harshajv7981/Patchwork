@@ -262,7 +262,6 @@ class ImplementFeatureResponse(BaseModel):
 class SandboxVerifyRequest(BaseModel):
     repo_full_name: str
     file_rewrites: dict[str, str]
-    runtime: Optional[Literal["process", "docker"]] = None
     terminal_command: Optional[list[str]] = None
 
 
