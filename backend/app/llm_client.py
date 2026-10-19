@@ -442,8 +442,12 @@ class GeminiClient:
                 except ValueError:
                     data = {}
 
+                # Gemini returns errors as a single-element list: [{"error": {...}}].
+                if isinstance(data, list):
+                    data = data[0] if data else {}
+
                 if response.is_error:
-                    error = data.get("error", {})
+                    error = data.get("error", {}) if isinstance(data, dict) else {}
                     error_detail = error.get("message") if isinstance(error, dict) else str(error)
 
                     if attempt < max_attempts and response.status_code in {408, 429, 500, 503}:

@@ -196,8 +196,10 @@ async def health() -> HealthResponse:
     configured_model = model_for("coding")
     try:
         response = await get_llm_client().list()
+        # Some providers (Gemini) prefix ids with "models/"; compare on the bare name.
+        want = configured_model.split("/")[-1]
         model_available = any(
-            model.model == configured_model for model in response.models
+            model.model.split("/")[-1] == want for model in response.models
         )
         provider_connected = True
     except Exception:
