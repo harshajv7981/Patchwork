@@ -70,6 +70,30 @@ class ReceptivenessTests(unittest.TestCase):
         self.assertFalse(self.judge(repo(prs, python=0.3))[0])
 
 
+class EnglishRepoTests(unittest.TestCase):
+    EN_README = (
+        "# fastthing\n\n[![CI](https://img.shields.io/badge/ci-passing-green)](https://x)\n\n"
+        "A small library for parsing configuration files quickly and safely.\n\n"
+        "```python\nfrom fastthing import load\ncfg = load('app.toml')\n```\n\n"
+        "It supports TOML, YAML and JSON, and reports helpful errors with line numbers."
+    )
+    ZH_README = "# 项目\n\n利用 AI 大模型，根据主题或关键词一键生成高清短视频。支持多种语言和多种配音。\n\n```bash\npip install x\n```"
+
+    def test_english_readme_with_code_and_badges_is_english(self):
+        self.assertTrue(discover.is_english_repo("Parse config files quickly", self.EN_README))
+
+    def test_chinese_readme_is_rejected_even_with_english_description(self):
+        self.assertFalse(discover.is_english_repo("Generate HD short videos with AI", self.ZH_README))
+
+    def test_non_english_repo_is_skipped_by_assess(self):
+        prs = [pr("CONTRIBUTOR", 3, 2) for _ in range(8)]
+        data = repo(prs)
+        data["readmeMd"] = {"text": self.ZH_README}
+        ok, reason, _ = discover.assess(discover.measure(data, NOW), NOW)
+        self.assertFalse(ok)
+        self.assertIn("English", reason)
+
+
 class PickPythonTests(unittest.TestCase):
     AVAILABLE = ["3.12", "3.13", "3.14", "3.15"]
 

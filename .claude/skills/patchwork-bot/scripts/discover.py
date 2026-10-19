@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Find repos worth auditing: today's trending Python repos plus the top repos by stars,
-kept only if they merge outsiders' PRs quickly.
+kept only if they're English-language and merge outsiders' PRs quickly.
 
   discover.py [--top N] [--refresh]
 
@@ -26,6 +26,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import state as bot_state  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "backend"))
+from app.contribution_service import is_english_text  # noqa: E402
+
 TRENDING_URL = "https://github.com/trending/python?since=daily"
 OUTSIDERS = {"CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE"}
 LIST_WORDS = re.compile(
@@ -48,6 +51,8 @@ query($owner: String!, $name: String!) {
     nameWithOwner stargazerCount pushedAt isFork isArchived description
     languages(first: 10, orderBy: {field: SIZE, direction: DESC}) { totalSize edges { size node { name } } }
     openPRs: pullRequests(states: OPEN) { totalCount }
+    readmeMd: object(expression: "HEAD:README.md") { ... on Blob { text } }
+    readmeRst: object(expression: "HEAD:README.rst") { ... on Blob { text } }
     closed: pullRequests(states: [MERGED, CLOSED], first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) {
       nodes { authorAssociation createdAt mergedAt author { login __typename } }
     }
@@ -57,6 +62,37 @@ query($owner: String!, $name: String!) {
 
 def _ts(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+CJK = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
+
+
+def prose(markdown: str, limit: int = 3000) -> str:
+    """README text with code, HTML, links, badges and URLs removed, for language detection."""
+    text = re.sub(r"```.*?```|~~~.*?~~~", " ", markdown, flags=re.S)
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)          # images/badges first...
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)       # ...then links (keep their text)
+    text = re.sub(r"<[^>]+>|`[^`]*`|https?://\S+", " ", text)
+    text = re.sub(r"[#>*_|=\-\[\]()]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()[:limit]
+
+
+MIN_DETECT_LETTERS = 80  # langdetect is unreliable below this (it calls short English French)
+
+
+def is_english_repo(description: str, readme: str) -> bool:
+    """Is the repo's description + README English? Maintainers of a repo whose primary README
+    is in another language mostly work in it, so an English report is a poor fit there."""
+    text = f"{description}. {prose(readme)}".strip(". ")
+    letters = re.findall(r"[^\W\d_]", text)
+    if not letters:
+        return True  # nothing to judge by; the receptiveness checks still apply
+    if len(CJK.findall(text)) / len(letters) > 0.1:
+        return False
+    if len(letters) < MIN_DETECT_LETTERS:
+        # Too short for language detection: accept Latin-script text.
+        return all(ord(c) < 0x250 for c in letters)
+    return is_english_text(text)
 
 
 def trending() -> list[str]:
@@ -91,6 +127,7 @@ def measure(repo_data: dict, now: datetime) -> dict:
     total = langs["totalSize"] or 1
     python_share = sum(e["size"] for e in langs["edges"] if e["node"]["name"] == "Python") / total
 
+    readme = (repo_data.get("readmeMd") or repo_data.get("readmeRst") or {}).get("text") or ""
     nodes = repo_data["closed"]["nodes"]
 
     def is_outsider(pr):
@@ -109,6 +146,7 @@ def measure(repo_data: dict, now: datetime) -> dict:
         "is_fork": repo_data["isFork"],
         "is_archived": repo_data["isArchived"],
         "description": repo_data.get("description") or "",
+        "english": is_english_repo(repo_data.get("description") or "", readme),
         "python_share": round(python_share, 2),
         "outsider_closed": len(outsiders),
         "outsider_merged": len(merged),
@@ -128,6 +166,8 @@ def assess(m: dict, now: datetime) -> tuple[bool, str, float]:
         return False, f"only {m['python_share']:.0%} Python", 0.0
     if LIST_WORDS.search(m["description"]):
         return False, "looks like a list/docs repo", 0.0
+    if not m.get("english", False):
+        return False, "not an English-language repo (README/description)", 0.0
     if m["outsider_closed"] < MIN_OUTSIDER_SAMPLE:
         return False, f"too little outsider PR history ({m['outsider_closed']}) to judge", 0.0
     if m["merge_rate"] < MIN_MERGE_RATE:
@@ -167,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
             skipped.append({"repo": repo, "source": source, "reason": reason})
             continue
         hit = cache.get(repo)
-        if hit and not args.refresh and now - _ts(hit["at"]) < timedelta(days=CACHE_DAYS):
+        if hit and not args.refresh and "english" in hit["metrics"] and now - _ts(hit["at"]) < timedelta(days=CACHE_DAYS):
             m = hit["metrics"]
         else:
             data = fetch(repo)
