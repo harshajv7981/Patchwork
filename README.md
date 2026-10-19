@@ -1,6 +1,10 @@
 # 🧵 Patchwork: Autonomous AI Open-Source Contribution Platform
 
-> **Patchwork** is a local-first, autonomous AI engineer and contribution workspace powered by local LLMs (Ollama `qwen3.5:9b`), FastAPI, PostgreSQL, and React. It autonomously discovers high-impact open-source repositories, triages issues, proactively ideates architectural enhancements, generates multi-file code implementations, executes them inside an **isolated test sandbox** with automated quality checks (`pytest`, `flake8`, `mypy`), self-heals failing tests using AI diagnostics (capped at 3 attempts), and dispatches pull requests to GitHub after pre-flight duplicate and policy checks.
+> **Patchwork** is an autonomous AI software engineer and open-source contribution workspace built on FastAPI, PostgreSQL, and React.
+
+**What it does, in one loop:** it discovers high-impact repositories on GitHub, triages their open issues (and proposes architectural improvements when a repo has no good starter issues), generates multi-file code changes, verifies them inside an **isolated Docker test sandbox** (`pytest`, `flake8`, `mypy`), self-heals failing tests from the error output (up to 3 attempts), and opens pull requests on GitHub after duplicate- and policy-aware pre-flight checks — all tracked from a React dashboard with human approval gates before anything is pushed.
+
+**The LLM is pluggable.** Point it at Google Gemini (recommended free tier), Groq, OpenRouter, or a fully local Ollama model, and trade capability, cost, and privacy however you like — no code changes, just `.env`.
 
 ---
 
@@ -39,7 +43,7 @@
 - **Full Codeblock Parsing**: Generates complete, syntactically correct multi-file codebases using structured file blocks (`=== FILE: path === ... === END FILE ===`).
 - **Interactive Diff Viewer**: Preview before/after file changes, switch between modified files, and inspect proposed changes prior to execution or pull request submission.
 
-### 4. 🧪 Isolated Test Sandbox (Process & Worktree Isolation)
+### 4. 🧪 Isolated Test Sandbox (Docker by default)
 - **Safe Execution Environment**: Copies target repositories into an isolated temporary workspace (`/tmp/patchwork_sandbox_<uuid>`) without dirtying the local repository cache.
 - **4-Stage Verification Suite**:
   1. ⚡ **Syntax Validation (`py_compile`)**: Instant compilation check across all modified Python files.
@@ -51,7 +55,7 @@
 
 ### 5. AI Self-Healing Loop (Capped at 3 Attempts)
 - **Automated Failure Diagnostics**: Ingests test failure tracebacks, compilation errors, and linter warnings from the sandbox.
-- **Ollama AI Debugger**: Feeds diagnostic error logs and current code blocks back to Ollama (`qwen3.5:9b`) with `think=False` for fast diagnosis and repair.
+- **LLM Debugger**: Feeds diagnostic error logs and current code blocks back to the configured LLM provider with `think=False` for fast diagnosis and repair.
 - **Diff History Tracking**: Each heal attempt is recorded with its analysis and outcome. Prior attempts are included in the LLM prompt to prevent repeating the same failed fix.
 - **Automatic Re-Validation**: After each heal, reruns the complete 4-stage sandbox verification suite. Stops when all checks pass or the retry cap (default 3) is exhausted.
 - **Graceful Failure**: When the cap is reached without success, returns `healed=False` with the full diff history for manual review.
@@ -87,14 +91,14 @@
 │  github_service.py  │   agent_service.py   │ sandbox_service.py │     scheduler.py     │
 │  - Repo discovery   │  - Feature ideation  │ - Worktree copy    │  - APScheduler       │
 │  - Issue fetching   │  - Multi-file diffs  │ - py_compile check │  - Daily 9 AM IST    │
-│  - PR creation      │  - Ollama generation │ - flake8 / mypy    │  - Manual triggers   │
+│  - PR creation      │  - LLM-based codegen │ - flake8 / mypy    │  - Manual triggers   │
 │  - Branch & commit  │  - Context retrieval │ - pytest execution │  - Run tracking      │
 └──────────┬──────────┴──────────┬───────────┴──────────┬─────────┴──────────┬───────────┘
            │                     │                      │                    │
            ▼                     ▼                      ▼                    ▼
    ┌───────────────┐     ┌───────────────┐      ┌───────────────┐    ┌───────────────┐
-   │  GitHub REST  │     │  Ollama LLM   │      │ Isolated Temp │    │  PostgreSQL   │
-   │      API      │     │  (qwen3.5:9b) │      │  Workspaces   │    │  (SQLAlchemy) │
+   │  GitHub REST  │     │  LLM Provider │      │ Docker / temp │    │  PostgreSQL   │
+   │      API      │     │  (pluggable)  │      │   sandboxes   │    │  (SQLAlchemy) │
    └───────────────┘     └───────────────┘      └───────────────┘    └───────────────┘
 ```
 
@@ -112,6 +116,9 @@ Patchwork/
 │       ├── agent_service.py     # AI agent for feature ideation, code diff generation, and repo analysis
 │       ├── sandbox_service.py   # Isolated workspace runner, pytest/linters execution & AI self-healing
 │       ├── github_service.py    # GitHub REST API client for repos, issues, and PR dispatch
+│       ├── contribution_agent.py# Durable autonomous agent (acceptance → patch → sandbox → review → PR)
+│       ├── llm_client.py        # Provider clients: Gemini, Groq, OpenRouter, Ollama
+│       ├── model_router.py      # Per-task model selection from LLM_PROVIDER + env
 │       └── scheduler.py         # Autonomous discovery orchestration & APScheduler jobs
 ├── frontend-lovable/
 │   ├── src/
@@ -120,8 +127,10 @@ Patchwork/
 │   │   └── lib/patchwork-data.ts               # API client for the FastAPI backend
 │   ├── package.json             # Frontend dependencies (React 19, TanStack, Tailwind, Vite)
 │   └── vite.config.ts           # Vite configuration
+├── tests/                       # pytest suite (run with `pytest` from the repo root)
+├── Dockerfile.sandbox           # Image for the isolated test sandbox (build as patchwork-sandbox:latest)
 ├── requirements.txt             # Python backend dependencies
-├── .env                         # Environment configuration (GitHub token, Ollama, Database URL)
+├── .env.example                 # Copy to .env and fill in tokens/keys (git-ignored)
 ├── setup.sh                     # Automated environment setup script
 └── README.md                    # Project documentation
 ```
@@ -156,21 +165,50 @@ Patchwork/
 
 ---
 
-## 🚀 Quick Start Guide
+## 🚀 Installation & Setup
+
+> A helper script `./setup.sh` scaffolds `.env` and checks prerequisites; the steps below do the same thing explicitly so you can see what's happening.
 
 ### Prerequisites
-- **Python 3.10+**
-- **Node.js 20+**
-- **PostgreSQL** running locally
-- **Ollama** running locally with `qwen3.5:9b` or `qwen2.5-coder:7b`
-- **GitHub Personal Access Token** (a classic PAT with `repo` scope is the most compatible option for fork-based PR creation; fine-grained PATs may authenticate successfully but still be unable to create forks)
+- **Python 3.10+** and **Node.js 20+**
+- **PostgreSQL 14+** running locally
+- **Docker** (Desktop or Engine) running — the test sandbox executes untrusted repository code in a container by default
+- **A GitHub Personal Access Token** — a classic PAT with the `repo` scope is the most compatible for fork-based PR creation (fine-grained PATs may authenticate but still fail to create forks)
+- **An LLM provider** — a free [Google Gemini](https://aistudio.google.com/) API key is recommended; a local **Ollama** install also works (see provider notes below)
 
-### 1. Configure Environment Variables
-Create a `.env` file in the project root:
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/harshajv7981/Patchwork.git
+cd Patchwork
+```
+
+### 2. Install backend dependencies
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 3. Create the database
+
+```bash
+createdb patchwork                 # tables are created automatically on first backend start
+```
+
+### 4. Configure environment variables
+Copy the template, then fill in your GitHub token and provider key:
+
+```bash
+cp .env.example .env
+```
+
+The committed `.env.example` mirrors the reference below:
 
 ```env
 GITHUB_TOKEN=ghp_your_personal_access_token_here
-DATABASE_URL=postgresql+asyncpg://chintugoddanti@localhost:5432/patchwork
+DATABASE_URL=postgresql+asyncpg://localhost:5432/patchwork
 OLLAMA_HOST=http://127.0.0.1:11434
 OLLAMA_MODEL=qwen3.5:9b
 OLLAMA_CODING_MODEL=qwen3.5:9b
@@ -204,7 +242,46 @@ GITHUB_WEBHOOK_SECRET=replace_with_a_random_secret
 
 Restart the backend after changing `.env`. Do not commit API keys or reuse a previously exposed key.
 
-### Agent Workflow API
+### 5. Build the sandbox Docker image
+The default `SANDBOX_RUNTIME=docker` runs the test suite inside this image, so build it once:
+
+```bash
+docker build -f Dockerfile.sandbox -t patchwork-sandbox:latest .
+```
+
+If you can't run Docker, set `SANDBOX_RUNTIME=process` in `.env` to run tests directly on the host — only do this for code you trust.
+
+### 6. (Optional) Start Ollama — local provider only
+Skip this unless you set `LLM_PROVIDER=ollama`:
+
+```bash
+ollama serve
+ollama pull qwen3.5:9b
+```
+
+### 7. Start the backend API
+
+```bash
+source .venv/bin/activate
+uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload
+```
+
+The API runs at **`http://localhost:8000`** (interactive Swagger docs at **`http://localhost:8000/docs`**). Tables are created on first start; `GET /api/health` should return `"status":"ok"` with `model_available:true`.
+
+### 8. Start the frontend dashboard
+In a separate terminal:
+
+```bash
+cd frontend-lovable
+npm install
+npm run dev
+```
+
+Open the dashboard at **`http://localhost:8080`**.
+
+---
+
+## 🤖 Agent Workflow API
 
 Patchwork's durable contribution agent can select work autonomously or run a specific issue:
 
@@ -227,37 +304,11 @@ Useful endpoints:
 
 Generated patches are limited to 20 files and 250,000 characters. Test execution, PR creation, and CI follow-up commits are approval-gated. Groq requests that exceed the account token-per-minute limit are retried with smaller completions and lower reasoning effort.
 
-If PR creation reports `403 Resource not accessible by personal access token` while creating a fork, create the fork manually from the target repository's GitHub **Fork** button and retry. Patchwork will reuse an existing fork. Otherwise replace the token with a classic PAT that has the `repo` scope and authorize it for the target repository.
+### Troubleshooting
 
-### 2. Start Ollama
-Ensure your local Ollama instance is active and has the required model:
-
-```bash
-ollama serve
-ollama pull qwen3.5:9b
-```
-
-### 3. Start the Backend API
-
-```bash
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload
-```
-
-The FastAPI backend will be available at **`http://localhost:8000`** (Interactive Swagger documentation at **`http://localhost:8000/docs`**).
-
-### 4. Start the Frontend Dashboard
-
-In a separate terminal:
-
-```bash
-cd frontend-lovable
-npm install
-npm run dev
-```
-
-The React dashboard will be live at **`http://localhost:8080`**.
+- **`GET /api/health` shows `model_available:false`** — your provider key or model name is wrong, or the model is unavailable to your account. For Gemini free tier, use the `-latest` aliases (the `gemini-2.5-*` models are retired for new accounts). Check `LLM_PROVIDER` and the matching key.
+- **PR creation returns `403 Resource not accessible by personal access token`** while creating a fork — create the fork manually from the target repo's GitHub **Fork** button and retry (Patchwork reuses an existing fork), or switch to a classic PAT with the `repo` scope authorized for that repository.
+- **Sandbox reports a dependency setup error in Docker mode** — Docker installs only prebuilt wheels from statically declared dependencies (requirements files or a PEP 621 `[project]` table); repos whose dependencies come only from `setup.py` or dynamic metadata aren't supported in Docker mode.
 
 ---
 
