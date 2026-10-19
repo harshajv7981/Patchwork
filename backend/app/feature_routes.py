@@ -235,7 +235,14 @@ async def create_issue_for_finding(
         raise HTTPException(status_code=404, detail="Finding not found")
     if feature.contribution_source != "proactive_issue":
         raise HTTPException(status_code=409, detail="Only proactive audit findings can publish issues")
-    body = f"{feature.description}\n\n### Suggested implementation\n{feature.implementation_plan}"
+    if feature.status == "issue_created":
+        raise HTTPException(status_code=409, detail="This finding has already been published as a GitHub issue")
+    body = (
+        f"{feature.description}\n\n### Suggested implementation\n{feature.implementation_plan}"
+        "\n\n---\n"
+        "> **Note:** This issue was proposed by an AI code audit, not by a human maintainer. "
+        "Please review it for accuracy before acting on it."
+    )
     try:
         from app.github_service import GitHubService
         result = await asyncio.to_thread(GitHubService().create_issue, feature.repository, feature.title, body)
