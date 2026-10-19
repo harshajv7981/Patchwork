@@ -7,14 +7,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.feature_agent import create_feature_pull_request, implement_feature, suggest_features_for_repo
+from app.feature_agent import audit_repository_for_issues, create_feature_pull_request, implement_feature, suggest_features_for_repo
 from app.database import get_db
-from app.models import FeatureSuggestion as FeatureModel, PullRequest as PRModel
+from app.models import FeatureSuggestion as FeatureModel, PullRequest as PRModel, Repository as RepoModel, Run as RunModel
 from app.schemas import (
     CreatePRRequest,
     FeatureSuggestionResponse,
     ImplementFeatureResponse,
     PullRequestResponse,
+    PublishedIssueResponse,
     SuggestFeaturesResponse,
 )
 
@@ -91,6 +92,14 @@ async def suggest_features(
     ).scalar_one_or_none()
     desc = repo.description if repo else ""
 
+    run = RunModel(
+        name=f"Feature ideation: {repo_full_name}",
+        status="running",
+        started_at=datetime.utcnow(),
+    )
+    db.add(run)
+    await db.commit()
+
     from app.feature_agent import suggest_features_for_repo
 
     try:
@@ -98,8 +107,12 @@ async def suggest_features(
             repo_full_name=repo_full_name,
             repo_description=desc or "",
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Feature generation failed: {str(e)}")
+    except Exception as error:
+        run.status = "failed"
+        run.summary = f"Feature ideation failed: {error}"
+        run.completed_at = datetime.utcnow()
+        await db.commit()
+        raise HTTPException(status_code=500, detail=f"Feature generation failed: {error}") from error
 
     saved_records = []
     for s in raw_suggestions:
@@ -144,11 +157,94 @@ async def suggest_features(
             )
         )
 
+    run.status = "completed"
+    run.repositories_scanned = 1
+    run.issues_found = len(response_list)
+    run.summary = f"Generated {len(response_list)} feature idea(s) for {repo_full_name}"
+    run.completed_at = datetime.utcnow()
+    await db.commit()
+
     return SuggestFeaturesResponse(
         repository=repo_full_name,
         count=len(response_list),
         suggestions=response_list,
     )
+
+
+@router.post("/api/repositories/{repo_full_name:path}/scan-issues", response_model=SuggestFeaturesResponse)
+async def scan_repository_for_issues(
+    repo_full_name: str,
+    db: AsyncSession = Depends(get_db),
+) -> SuggestFeaturesResponse:
+    """Scan repository code for concrete defects and save reviewable findings."""
+    repo = (await db.execute(select(RepoModel).where(RepoModel.full_name == repo_full_name))).scalar_one_or_none()
+    try:
+        findings = await audit_repository_for_issues(repo_full_name, repo.description if repo else "")
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Repository issue scan failed: {error}") from error
+
+    records = []
+    for finding in findings:
+        record = FeatureModel(
+            repository=repo_full_name,
+            title=finding["title"],
+            description=finding["description"],
+            category=finding["category"],
+            complexity=finding["complexity"],
+            impact_score=finding["impact_score"],
+            implementation_plan=finding["implementation_plan"],
+            suggested_files=json.dumps(finding["suggested_files"]),
+            status="suggested",
+            contribution_source="proactive_issue",
+        )
+        db.add(record)
+        records.append(record)
+    await db.commit()
+    response_list = []
+    for record in records:
+        await db.refresh(record)
+        response_list.append(FeatureSuggestionResponse(
+            id=record.id,
+            repository=record.repository,
+            title=record.title,
+            description=record.description,
+            category=record.category,
+            complexity=record.complexity,
+            impact_score=record.impact_score,
+            implementation_plan=record.implementation_plan,
+            suggested_files=json.loads(record.suggested_files or "[]"),
+            status=record.status,
+            ai_analysis=record.ai_analysis,
+            pr_title=record.pr_title,
+            pr_body=record.pr_body,
+            contribution_source=record.contribution_source,
+            review_required=record.review_required,
+            created_at=_format_time_ago(record.created_at),
+        ))
+    return SuggestFeaturesResponse(repository=repo_full_name, count=len(response_list), suggestions=response_list)
+
+
+@router.post("/api/features/{feature_id}/create-issue", response_model=PublishedIssueResponse)
+async def create_issue_for_finding(
+    feature_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> PublishedIssueResponse:
+    """Publish an approved proactive finding as a GitHub issue."""
+    feature = await db.get(FeatureModel, feature_id)
+    if not feature:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    if feature.contribution_source != "proactive_issue":
+        raise HTTPException(status_code=409, detail="Only proactive audit findings can publish issues")
+    body = f"{feature.description}\n\n### Suggested implementation\n{feature.implementation_plan}"
+    try:
+        from app.github_service import GitHubService
+        result = await asyncio.to_thread(GitHubService().create_issue, feature.repository, feature.title, body)
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"GitHub issue creation failed: {error}") from error
+    feature.status = "issue_created"
+    feature.ai_analysis = f"GitHub issue #{result['number']}: {result['url']}"
+    await db.commit()
+    return PublishedIssueResponse(feature_id=feature.id, issue_number=result["number"], issue_url=result["url"])
 
 
 @router.post("/api/features/{feature_id}/implement", response_model=ImplementFeatureResponse)

@@ -10,6 +10,7 @@ Flow:
 import os
 import re
 import asyncio
+import ast
 import logging
 import shutil
 import subprocess
@@ -404,6 +405,10 @@ async def generate_regression_test(
         raise ValueError("Generated regression test must be a Python file under tests/")
     if not test_content.strip():
         raise ValueError("Generated regression test is empty")
+    try:
+        ast.parse(test_content, filename=test_path)
+    except SyntaxError as error:
+        raise ValueError(f"Generated regression test is invalid Python: {error}") from error
 
     return {
         "test_path": test_path,

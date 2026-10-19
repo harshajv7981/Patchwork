@@ -298,7 +298,13 @@ async def list_issues(
     response: Response = None,
     db: AsyncSession = Depends(get_db),
 ) -> list[CandidateIssueResponse]:
-    query = select(IssueModel).where(IssueModel.is_suitable == True)
+    from app.contribution_service import is_english_issue, recent_issue_cutoff
+
+    recent_cutoff = recent_issue_cutoff()
+    query = select(IssueModel).where(
+        IssueModel.is_suitable == True,
+        IssueModel.updated_at >= recent_cutoff,
+    )
 
     if repository:
         query = query.where(IssueModel.repository == repository)
@@ -306,7 +312,10 @@ async def list_issues(
     if difficulty:
         query = query.where(IssueModel.difficulty == difficulty)
 
-    total_query = select(func.count(IssueModel.id)).where(IssueModel.is_suitable == True)
+    total_query = select(func.count(IssueModel.id)).where(
+        IssueModel.is_suitable == True,
+        IssueModel.updated_at >= recent_cutoff,
+    )
     if repository:
         total_query = total_query.where(IssueModel.repository == repository)
     if difficulty:
@@ -315,10 +324,14 @@ async def list_issues(
     if response is not None:
         response.headers["X-Total-Count"] = str(total)
 
-    query = query.order_by(desc(IssueModel.suitability_score)).offset(offset).limit(limit)
+    query = query.order_by(desc(IssueModel.suitability_score))
 
     result = await db.execute(query)
-    issues = result.scalars().all()
+    issues = [
+        issue
+        for issue in result.scalars().all()
+        if is_english_issue(issue.title, issue.body)
+    ]
     from app.contribution_service import rank_issue_candidates
 
     ranked = rank_issue_candidates(
@@ -340,8 +353,12 @@ async def list_issues(
             }
             for issue in issues
         ],
-        limit=limit,
+        limit=len(issues),
     )
+    total = len(ranked)
+    if response is not None:
+        response.headers["X-Total-Count"] = str(total)
+    ranked = ranked[offset:offset + limit]
     issues_by_id = {issue.id: issue for issue in issues}
 
     return [

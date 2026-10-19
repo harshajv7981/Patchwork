@@ -8,6 +8,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.contribution_agent import ContributionAgent
+from app.contribution_service import is_english_issue, recent_issue_cutoff
 from app.database import AsyncSessionLocal, get_db
 from app.memory_service import remember
 from app.models import AgentMemoryFact, AgentReviewFinding, AgentRun, AgentStep, Issue
@@ -85,6 +86,9 @@ async def start_agent_run(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if run.status in {"queued", "failed"}:
+        if run.status == "failed":
+            run.failure_reason = None
+            await db.commit()
         asyncio.create_task(_execute_agent_run(run.id))
     return _agent_run_response(run)
 
@@ -108,11 +112,15 @@ async def start_next_agent_run(db: AsyncSession = Depends(get_db)) -> AgentRunRe
     issues = (
         await db.scalars(
             select(IssueModel)
-            .where(IssueModel.is_suitable == True)
+            .where(
+                IssueModel.is_suitable == True,
+                IssueModel.updated_at >= recent_issue_cutoff(),
+            )
             .order_by(desc(IssueModel.suitability_score))
             .limit(100)
         )
     ).all()
+    issues = [issue for issue in issues if is_english_issue(issue.title, issue.body)]
     candidates = rank_issue_candidates(
         [
             {
@@ -189,6 +197,8 @@ async def get_agent_steps(run_id: int, db: AsyncSession = Depends(get_db)) -> li
             input=json.loads(step.input_json or "{}"),
             output=json.loads(step.output_json or "{}"),
             error=step.error,
+            started_at=_format_datetime(step.started_at),
+            completed_at=_format_datetime(step.completed_at),
         )
         for step in steps
     ]

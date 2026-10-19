@@ -13,6 +13,7 @@ from github import Github
 from app.agent_service import (
     GITHUB_TOKEN,
     _clone_or_update,
+    _clean_analysis_text,
     _extract_json_block,
     _get_or_create_fork,
     _open_github_pr,
@@ -132,6 +133,67 @@ async def suggest_features_for_repo(
             })
 
     return clean_suggestions
+
+
+async def audit_repository_for_issues(
+    repo_full_name: str,
+    repo_description: str = "",
+) -> list[dict]:
+    """Find concrete, evidence-backed defects that can become reviewed issues."""
+    client = get_llm_client()
+    local = await asyncio.to_thread(_clone_or_update, repo_full_name)
+    file_tree = await asyncio.to_thread(_repo_file_tree, local)
+    readme_text = ""
+    for name in ("README.md", "README.rst", "README.txt", "readme.md"):
+        path = local / name
+        if path.exists():
+            readme_text = path.read_text(errors="replace")[:2500]
+            break
+
+    prompt = textwrap.dedent(f"""
+        You are a senior open-source maintainer auditing a repository for concrete bugs.
+        Repository: {repo_full_name}
+        About: {repo_description or '(none)'}
+        README:
+        {readme_text or '(none)'}
+        Python source tree:
+        {file_tree}
+
+        Identify 0 to 3 actionable defects that are supported by the repository structure.
+        Do not invent behavior, report style preferences, or propose broad features.
+        Prefer correctness bugs, missing edge-case handling, security issues, or missing tests.
+        Return ONLY JSON in this format:
+        {{"findings": [{{
+          "title": "Short maintainer-friendly bug title",
+          "description": "Reproduction, impact, and why this is a real defect",
+          "severity": "bug|security|testing",
+          "implementation_plan": "Small steps to fix and verify it",
+          "suggested_files": ["path/to/file.py"],
+          "impact_score": 75
+        }}]}}
+    """).strip()
+    response = await client.generate(
+        model=model_for("triage"),
+        prompt=prompt,
+        think=False,
+        system="Return only valid JSON. Do not include markdown or preamble.",
+        options={"temperature": 0.1, "num_predict": 3072},
+    )
+    data = _extract_json_block(response.response)
+    findings = data.get("findings", []) if isinstance(data, dict) else []
+    return [
+        {
+            "title": str(item["title"]).strip(),
+            "description": str(item["description"]).strip(),
+            "category": str(item.get("severity", "bug")).lower(),
+            "complexity": "intermediate",
+            "impact_score": max(50, min(100, int(item.get("impact_score", 75)))),
+            "implementation_plan": str(item.get("implementation_plan", "")).strip(),
+            "suggested_files": [str(path) for path in item.get("suggested_files", []) if isinstance(path, str)],
+        }
+        for item in findings
+        if isinstance(item, dict) and item.get("title") and item.get("description")
+    ][:3]
 
 
 async def implement_feature(

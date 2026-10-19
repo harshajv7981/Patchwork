@@ -8,6 +8,8 @@ from app.database import AsyncSessionLocal
 from app.models import Repository as RepoModel, Issue as IssueModel, Run as RunModel
 from app.github_service import GitHubService
 
+DISCOVERY_REPOSITORY_LIMIT = 10
+
 
 class DiscoveryScheduler:
     def __init__(self):
@@ -45,15 +47,15 @@ class DiscoveryScheduler:
             try:
                 trending_repos = await self.github_service.discover_trending_repositories(
                     language="python",
-                    max_results=25
+                    max_results=10
                 )
 
                 popular_repos = await self.github_service.discover_popular_repositories(
                     language="python",
-                    max_results=25
+                    max_results=10
                 )
 
-                all_repos = trending_repos + popular_repos
+                all_repos = list({repo["full_name"]: repo for repo in trending_repos + popular_repos}.values())[:DISCOVERY_REPOSITORY_LIMIT]
 
                 if not all_repos:
                     raise Exception("No repositories found from GitHub API")
@@ -62,7 +64,7 @@ class DiscoveryScheduler:
                 total_issues = 0
                 failed_repos = 0
 
-                for repo_data in all_repos[:50]:
+                for repo_data in all_repos:
                     try:
                         existing_repo = await session.execute(
                             select(RepoModel).where(
@@ -186,15 +188,15 @@ class DiscoveryScheduler:
             try:
                 trending_repos = await self.github_service.discover_trending_repositories(
                     language="python",
-                    max_results=25
+                    max_results=10
                 )
 
                 popular_repos = await self.github_service.discover_popular_repositories(
                     language="python",
-                    max_results=25
+                    max_results=10
                 )
 
-                all_repos = trending_repos + popular_repos
+                all_repos = list({repo["full_name"]: repo for repo in trending_repos + popular_repos}.values())[:DISCOVERY_REPOSITORY_LIMIT]
 
                 if not all_repos:
                     raise Exception("No repositories found from GitHub API")
@@ -203,7 +205,7 @@ class DiscoveryScheduler:
                 total_issues = 0
                 failed_repos = 0
 
-                for repo_data in all_repos[:50]:
+                for repo_data in all_repos:
                     try:
                         existing_repo = await session.execute(
                             select(RepoModel).where(

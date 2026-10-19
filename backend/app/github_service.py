@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from github import Github, GithubException, Auth
 from github.Repository import Repository as GithubRepo
 from github.Issue import Issue as GithubIssue
+from app.contribution_service import is_english_text
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
@@ -44,6 +45,8 @@ class GitHubService:
                 if count >= max_results:
                     break
                 repo_data = self._extract_repo_data(repo)
+                if repo_data is None:
+                    continue
                 results.append(repo_data)
                 count += 1
 
@@ -77,6 +80,8 @@ class GitHubService:
                 if count >= max_results:
                     break
                 repo_data = self._extract_repo_data(repo)
+                if repo_data is None:
+                    continue
                 results.append(repo_data)
                 count += 1
 
@@ -150,8 +155,17 @@ class GitHubService:
         repo = self.client.get_repo(repo_full_name)
         return str(repo.get_issue(issue_number).state).lower()
 
-    def _extract_repo_data(self, repo: GithubRepo) -> dict:
+    def create_issue(self, repo_full_name: str, title: str, body: str) -> dict:
+        if not self.token:
+            raise RuntimeError("GITHUB_TOKEN is not set - cannot create an issue")
+        issue = self.client.get_repo(repo_full_name).create_issue(title=title, body=body)
+        return {"number": issue.number, "url": issue.html_url}
+
+    def _extract_repo_data(self, repo: GithubRepo) -> Optional[dict]:
         """Extract relevant data from a GitHub repository object."""
+
+        if not self._is_english_repository(repo):
+            return None
 
         owner, name = repo.full_name.split("/")
 
@@ -171,6 +185,21 @@ class GitHubService:
             "url": repo.html_url,
             "last_scanned_at": datetime.utcnow()
         }
+
+    @staticmethod
+    def _is_english_repository(repo: GithubRepo) -> bool:
+        """Reject repositories whose About text or README is not English."""
+        if repo.description and not is_english_text(repo.description):
+            return False
+        try:
+            readme_file = repo.get_readme()
+            if readme_file.encoding == "base64":
+                readme = readme_file.decoded_content.decode("utf-8", errors="ignore")
+            else:
+                readme = str(getattr(readme_file, "content", "") or "")
+        except (GithubException, AssertionError, UnicodeError):
+            readme = ""
+        return is_english_text(readme[:12000])
 
     def _extract_issue_data(self, issue: GithubIssue, repo_full_name: str) -> dict:
         """Extract relevant data from a GitHub issue object."""

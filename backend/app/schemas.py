@@ -119,6 +119,8 @@ class AgentStepResponse(BaseModel):
     input: dict
     output: dict
     error: Optional[str]
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
 
 
 class DiffReviewFinding(BaseModel):
@@ -240,6 +242,12 @@ class FeatureSuggestionResponse(BaseModel):
     contribution_source: str = "ai_proposed"
     review_required: bool = True
     created_at: str
+
+
+class PublishedIssueResponse(BaseModel):
+    feature_id: int
+    issue_number: int
+    issue_url: str
 
 
 class ImplementFeatureResponse(BaseModel):

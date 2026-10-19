@@ -22,6 +22,7 @@ from app.agent_service import (
 )
 from app.models import AgentApproval, AgentReviewFinding, AgentRun, AgentStep, Issue as IssueModel, PullRequest
 from app.memory_service import context_for, remember
+from app.contribution_service import is_english_issue, recent_issue_cutoff
 from app.sandbox_service import run_sandbox_validation, run_sandbox_validation_with_auto_heal
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,10 @@ class ContributionAgent:
         issue = await self.session.get(IssueModel, issue_id)
         if issue is None:
             raise ValueError(f"Issue not found: {issue_id}")
+        if issue.updated_at < recent_issue_cutoff():
+            raise ValueError("Issue is older than the five-day queue window")
+        if not is_english_issue(issue.title, issue.body):
+            raise ValueError("Issue is not in English")
         from app.github_service import GitHubService
 
         issue_state = await asyncio.to_thread(
@@ -108,30 +113,41 @@ class ContributionAgent:
             regression: dict[str, Any] = {}
             before_result: dict[str, Any] = {}
             regression_step_key = "regression_test"
+            regression_feedback = ""
             for regression_attempt in range(1, 4):
                 regression_step_key = (
                     "regression_test"
                     if regression_attempt == 1
                     else f"regression_test_retry_{regression_attempt}"
                 )
-                feedback = (
-                    ""
-                    if regression_attempt == 1
-                    else "The previous generated test passed on the untouched repository. Generate a different test that directly reproduces the reported issue."
+                feedback = regression_feedback or (
+                    "The previous generated test passed on the untouched repository. Generate a different test that directly reproduces the reported issue."
+                    if regression_attempt > 1
+                    else ""
                 )
-                regression = await self._run_step(
-                    run,
-                    regression_step_key,
-                    {"issue_id": issue.id, "attempt": regression_attempt, "feedback": feedback},
-                    generate_regression_test(
-                        issue.repository,
-                        issue.number,
-                        issue.title,
-                        issue.body or "",
-                        feedback,
-                    ),
-                    tokens=3072,
-                )
+                try:
+                    regression = await self._run_step(
+                        run,
+                        regression_step_key,
+                        {"issue_id": issue.id, "attempt": regression_attempt, "feedback": feedback},
+                        generate_regression_test(
+                            issue.repository,
+                            issue.number,
+                            issue.title,
+                            issue.body or "",
+                            feedback,
+                        ),
+                        tokens=3072,
+                    )
+                except Exception as error:
+                    if regression_attempt == 3:
+                        raise
+                    regression_feedback = (
+                        "The previous regression-test generation failed before validation. "
+                        "Return valid JSON with a complete, syntactically valid Python test_content string. "
+                        f"Failure: {str(error)[:500]}"
+                    )
+                    continue
                 validation_step = await self.runtime.start_step(
                     run,
                     "regression_test_validation",
@@ -144,6 +160,12 @@ class ContributionAgent:
                 )
                 await self.runtime.finish_step(validation_step, before_result)
                 await self.session.commit()
+                if self._has_environment_failure(before_result):
+                    tests = before_result.get("checks", {}).get("tests", {})
+                    recovery = tests.get("dependency_recovery") or {}
+                    reason = recovery.get("reason") or tests.get("output") or tests.get("summary")
+                    await self._fail(run, f"Sandbox dependency/setup failed: {str(reason)[:4000]}")
+                    return run
                 if not before_result.get("success") and self._has_test_failure(before_result):
                     break
             else:
@@ -320,6 +342,11 @@ class ContributionAgent:
     def _has_test_failure(result: dict[str, Any]) -> bool:
         tests = result.get("checks", {}).get("tests", {})
         return tests.get("failed_count", 0) > 0 or tests.get("exit_code") not in (None, 0)
+
+    @staticmethod
+    def _has_environment_failure(result: dict[str, Any]) -> bool:
+        tests = result.get("checks", {}).get("tests", {})
+        return bool(tests.get("setup_error") or tests.get("dependency_recovery"))
 
     @staticmethod
     def _validate_patch_budget(rewrites: dict[str, str]) -> None:

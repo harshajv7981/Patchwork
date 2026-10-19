@@ -87,6 +87,8 @@ function App() {
 
   // Per-repo feature suggesting state: repo_full_name -> boolean
   const [suggestingRepo, setSuggestingRepo] = useState<Record<string, boolean>>({})
+  const [scanningRepo, setScanningRepo] = useState<Record<string, boolean>>({})
+  const [publishingIssue, setPublishingIssue] = useState<Record<number, boolean>>({})
   // Per-feature implementation state: featureId -> { loading, result, error }
   const [featureImplementState, setFeatureImplementState] = useState<
     Record<number, { loading: boolean; result?: ImplementFeatureResult; error?: string }>
@@ -340,6 +342,47 @@ function App() {
     return rightDate.localeCompare(leftDate)
   })
 
+  function friendlyAgentFailure(reason?: string) {
+    if (!reason) return 'The agent run could not complete.'
+    const normalized = reason.toLowerCase()
+    if (normalized.includes('server restarted')) {
+      return 'The backend restarted while this run was active. Retry the run.'
+    }
+    if (normalized.includes('json_validate_failed') || normalized.includes('failed to generate json')) {
+      return 'The AI response could not be parsed. Retry the run to regenerate this step.'
+    }
+    if (normalized.includes('sandbox verification failed')) {
+      return 'Validation did not pass. Review the agent log before retrying.'
+    }
+    if (normalized.includes('generated regression test did not fail')) {
+      return 'The regression test did not reproduce the issue after 3 attempts. Manual verification is required.'
+    }
+    if (normalized.includes('sandbox dependency/setup failed') || normalized.includes('dependency setup failed')) {
+      return 'The sandbox could not install the repository dependencies. Check the Python version and project requirements.'
+    }
+    if (normalized.includes('older than the five-day')) {
+      return 'This issue is outside the five-day queue window.'
+    }
+    if (normalized.includes('not in english')) {
+      return 'This issue was skipped because it is not in English.'
+    }
+    return 'The agent run stopped unexpectedly. Open the run for details and retry.'
+  }
+
+  function agentStepDetail(step: AgentStep) {
+    const output = step.output
+    const generated = output.generated as Record<string, unknown> | undefined
+    if (typeof output.test_path === 'string') return `Prepared regression test ${output.test_path}`
+    if (typeof generated?.test_path === 'string') return `Prepared regression test ${generated.test_path}`
+    if (typeof output.overall_status === 'string') return `Sandbox result: ${output.overall_status}`
+    if (Array.isArray(output.criteria)) return `${output.criteria.length} acceptance criteria recorded`
+    if (output.file_rewrites && typeof output.file_rewrites === 'object') {
+      return `${Object.keys(output.file_rewrites as Record<string, unknown>).length} file rewrite(s) prepared`
+    }
+    if (typeof output.decision === 'string') return `Review decision: ${output.decision}`
+    return step.status === 'running' ? 'Working…' : 'Step completed'
+  }
+
   async function runDiscovery() {
     if (scanning) return
     setScanning(true)
@@ -394,6 +437,47 @@ function App() {
       alert(`Feature suggestion failed: ${err.message}`)
     } finally {
       setSuggestingRepo((prev) => ({ ...prev, [repoFullName]: false }))
+    }
+  }
+
+  async function scanRepoForIssues(repoFullName: string) {
+    setScanningRepo((prev) => ({ ...prev, [repoFullName]: true }))
+    try {
+      const res = await fetch(`${API_BASE}/api/repositories/${repoFullName}/scan-issues`, { method: 'POST' })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Repository issue scan failed')
+      }
+      const data = await res.json()
+      if (data.suggestions?.length) {
+        setFeatures((prev) => [...data.suggestions, ...prev])
+        setActiveTab('Feature Ideas')
+        notify('Code scan complete', `${data.suggestions.length} reviewable issue candidate(s) found.`)
+      } else {
+        notify('Code scan complete', 'No concrete defects were found in this scan.')
+      }
+    } catch (err: any) {
+      notify('Code scan failed', err.message || 'Unable to scan repository code.')
+    } finally {
+      setScanningRepo((prev) => ({ ...prev, [repoFullName]: false }))
+    }
+  }
+
+  async function publishFindingAsIssue(feature: FeatureSuggestion) {
+    setPublishingIssue((prev) => ({ ...prev, [feature.id]: true }))
+    try {
+      const res = await fetch(`${API_BASE}/api/features/${feature.id}/create-issue`, { method: 'POST' })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'GitHub issue creation failed')
+      }
+      const issue = await res.json()
+      setFeatures((prev) => prev.map((item) => item.id === feature.id ? { ...item, status: 'issue_created' } : item))
+      notify('GitHub issue created', `Issue #${issue.issue_number} is ready for implementation.`)
+    } catch (err: any) {
+      notify('Issue creation failed', err.message || 'Unable to create GitHub issue.')
+    } finally {
+      setPublishingIssue((prev) => ({ ...prev, [feature.id]: false }))
     }
   }
 
@@ -609,6 +693,56 @@ function App() {
     }
   }
 
+  async function openAgentRun(run: AgentRun) {
+    if (!run.issue_id) return
+
+    setActiveTab('Issue queue')
+    setAgentRuns((prev) => ({ ...prev, [run.issue_id!]: run }))
+
+    let issue = realIssues.find((candidate) => candidate.id === run.issue_id)
+    if (!issue) {
+      issue = {
+        id: run.issue_id,
+        repo: run.repository ?? 'Unknown repository',
+        title: run.issue_title ?? 'Issue agent run',
+        number: run.issue_number ? `#${run.issue_number}` : 'Issue run',
+        rawNumber: run.issue_number ?? 0,
+        label: 'agent run',
+        age: run.updated_at ?? run.created_at ?? '',
+        difficulty: 'Intermediate',
+      }
+    }
+    setSelectedIssue(issue)
+
+    const poll = async () => {
+      const [runResponse, stepsResponse] = await Promise.all([
+        fetch(`${API_BASE}/api/agent-runs/${run.id}`),
+        fetch(`${API_BASE}/api/agent-runs/${run.id}/steps`),
+      ])
+      if (!runResponse.ok) return
+
+      const latestRun: AgentRun = {
+        ...run,
+        ...(await runResponse.json()),
+        issue_title: run.issue_title,
+        issue_number: run.issue_number,
+      }
+      setAgentRuns((prev) => ({ ...prev, [run.issue_id!]: latestRun }))
+      if (stepsResponse.ok) {
+        const steps: AgentStep[] = await stepsResponse.json()
+        setAgentSteps((prev) => ({
+          ...prev,
+          [run.issue_id!]: steps,
+        }))
+      }
+      if (!['awaiting_approval', 'completed', 'failed', 'cancelled'].includes(latestRun.status)) {
+        window.setTimeout(() => void poll(), 2000)
+      }
+    }
+
+    void poll()
+  }
+
   async function approveAgentPR(issue: Issue, run: AgentRun) {
     try {
       const data = await postJson<PullRequest>(`/api/agent-runs/${run.id}/approve-pr`, {
@@ -768,7 +902,7 @@ function App() {
             <div className="usage-track">
               <span style={{ width: `${(realRepos.length / 50) * 100}%` }} />
             </div>
-            <p>{realRepos.length} of 50 repositories scanned</p>
+            <p>{realRepos.length} of 10 repositories scanned</p>
           </div>
           <div className="profile-row">
             <span className="profile-avatar">HG</span>
@@ -1092,6 +1226,19 @@ function App() {
                                   </>
                                 )}
                               </button>
+                              <button
+                                className="suggest-btn"
+                                type="button"
+                                disabled={scanningRepo[`${repo.owner}/${repo.name}`]}
+                                onClick={() => void scanRepoForIssues(`${repo.owner}/${repo.name}`)}
+                                title="Scan repository code for concrete defects"
+                              >
+                                {scanningRepo[`${repo.owner}/${repo.name}`] ? (
+                                  <><Loader size={11} className="spin" /> Scanning...</>
+                                ) : (
+                                  <><Radar size={11} /> Scan code</>
+                                )}
+                              </button>
                               <a
                                 href={`https://github.com/${repo.owner}/${repo.name}`}
                                 target="_blank"
@@ -1117,7 +1264,7 @@ function App() {
                   </table>
                 </div>
                 <div className="panel-footer">
-                  <span>Showing {filteredRepos.length} of 50 discovered today</span>
+                  <span>Showing {filteredRepos.length} of 10 discovered today</span>
                   <button
                     className="text-action"
                     type="button"
@@ -1680,7 +1827,22 @@ function App() {
               <div className="run-list">
                 {combinedRuns.length > 0 ? (
                   combinedRuns.map((run) => (
-                    <div key={`${run.kind}-${run.id}`}>
+                    <div
+                      key={`${run.kind}-${run.id}`}
+                      role={run.kind === 'agent' ? 'button' : undefined}
+                      tabIndex={run.kind === 'agent' ? 0 : undefined}
+                      onClick={run.kind === 'agent' ? () => void openAgentRun(run) : undefined}
+                      onKeyDown={
+                        run.kind === 'agent'
+                          ? (event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault()
+                                void openAgentRun(run)
+                              }
+                            }
+                          : undefined
+                      }
+                    >
                       <span
                         className={`run-icon ${run.status === 'completed' ? 'run-complete' : 'run-review'}`}
                       >
@@ -1702,7 +1864,9 @@ function App() {
                             : run.summary || 'In progress...'}
                         </small>
                         {run.kind === 'agent' && run.status === 'failed' && run.failure_reason && (
-                          <small className="run-failure">Failure: {run.failure_reason}</small>
+                          <small className="run-failure" title={run.failure_reason}>
+                            {friendlyAgentFailure(run.failure_reason)}
+                          </small>
                         )}
                       </span>
                       <b>
@@ -2165,6 +2329,21 @@ function App() {
                 Back to ideas
               </button>
 
+              {selectedFeature.contribution_source === 'proactive_issue' && selectedFeature.status !== 'issue_created' && (
+                <button
+                  className="button button-quiet"
+                  type="button"
+                  disabled={publishingIssue[selectedFeature.id]}
+                  onClick={() => void publishFindingAsIssue(selectedFeature)}
+                >
+                  {publishingIssue[selectedFeature.id] ? (
+                    <><Loader size={15} className="spin" /> Creating issue…</>
+                  ) : (
+                    <><Plus size={15} /> Create GitHub issue</>
+                  )}
+                </button>
+              )}
+
               {!selectedFeatureImplement?.result ? (
                 <button
                   className="button button-primary"
@@ -2299,7 +2478,11 @@ function App() {
                 <>
                   <strong>Agent workflow: {selectedAgentRun.status}</strong>
                   <span>Step: {selectedAgentRun.current_step} · Model requests: {selectedAgentRun.model_requests}</span>
-                  {selectedAgentRun.failure_reason && <span className="agent-run-error">{selectedAgentRun.failure_reason}</span>}
+                  {selectedAgentRun.failure_reason && (
+                    <span className="agent-run-error" title={selectedAgentRun.failure_reason}>
+                      {friendlyAgentFailure(selectedAgentRun.failure_reason)}
+                    </span>
+                  )}
                 </>
               ) : (
                 <>
@@ -2311,11 +2494,26 @@ function App() {
 
             {selectedAgentRun && (
               <div className="sandbox-live-console agent-live-console" aria-live="polite">
-                <div className="sandbox-live-console-title">Agent console</div>
+                <div className="sandbox-live-console-title">
+                  <span>Live agent activity</span>
+                  <small>{selectedAgentSteps.length} persisted step(s)</small>
+                </div>
                 {selectedAgentSteps.map((step) => (
-                  <div key={step.id}>
-                    $ {step.step_key} [{step.status}]
-                    {step.error ? `: ${step.error}` : ''}
+                  <div className={`agent-step-entry agent-step-${step.status}`} key={step.id}>
+                    <span className="agent-step-indicator">
+                      {step.status === 'completed' ? <CheckCircle2 size={13} /> : step.status === 'failed' ? <X size={13} /> : <Loader size={13} className="spin" />}
+                    </span>
+                    <span className="agent-step-copy">
+                      <strong>{step.step_key.replaceAll('_', ' ')}</strong>
+                      <small>{agentStepDetail(step)}{step.completed_at ? ` · ${new Date(step.completed_at).toLocaleTimeString()}` : ''}</small>
+                      {step.error && <span className="agent-step-error">{step.error}</span>}
+                      {Object.keys(step.output).length > 0 && (
+                        <details className="agent-step-details">
+                          <summary>View step data</summary>
+                          <pre>{JSON.stringify(step.output, null, 2)}</pre>
+                        </details>
+                      )}
+                    </span>
                   </div>
                 ))}
                 {selectedAgentRun.status !== 'completed' && selectedAgentRun.status !== 'failed' && (
