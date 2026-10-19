@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .env
 .DS_Store
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/
+node_modules/
+dist/
+.vite/
+.output/
