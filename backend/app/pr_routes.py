@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,11 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ci_agent import approve_ci_repair as _approve_ci_repair
 from app.ci_agent import propose_ci_repair as _propose_ci_repair
 from app.database import get_db
-from app.github_service import GitHubService
 from app.models import PullRequest as PRModel
 from app.schemas import AgentApprovalRequest, CIStatusResponse, PullRequestResponse
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 def _format_datetime(value: datetime | None) -> str:
     return value.isoformat() if value else ""
@@ -75,8 +76,6 @@ async def propose_ci_repair(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Diagnose failed CI and create an approval-gated repair proposal."""
-    from app.ci_agent import propose_ci_repair as _propose_ci_repair
-
     try:
         return await _propose_ci_repair(db, pull_request_id)
     except ValueError as exc:
@@ -93,8 +92,6 @@ async def approve_ci_repair(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Commit a reviewed CI repair proposal to the existing PR branch."""
-    from app.ci_agent import approve_ci_repair as _approve_ci_repair
-
     try:
         return await _approve_ci_repair(db, pull_request_id, body.reviewer)
     except ValueError as exc:

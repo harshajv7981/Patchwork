@@ -31,11 +31,11 @@ RUN_STATES = (
 _ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "queued": {"planning", "cancelled"},
     "planning": {"awaiting_approval", "executing", "failed", "cancelled"},
-    "awaiting_approval": {"executing", "cancelled", "failed"},
-    "executing": {"verifying", "awaiting_approval", "failed", "cancelled"},
+    "awaiting_approval": {"executing", "monitoring_ci", "cancelled", "failed"},
+    "executing": {"verifying", "awaiting_approval", "awaiting_pr_approval", "monitoring_ci", "failed", "cancelled"},
     "verifying": {"reviewing", "executing", "failed", "cancelled"},
     "reviewing": {"awaiting_pr_approval", "executing", "failed", "cancelled"},
-    "awaiting_pr_approval": {"monitoring_ci", "cancelled", "failed"},
+    "awaiting_pr_approval": {"executing", "monitoring_ci", "cancelled", "failed"},
     "monitoring_ci": {"completed", "executing", "failed", "cancelled"},
     "completed": set(),
     "failed": {"planning", "cancelled"},
@@ -207,7 +207,9 @@ class AgentRuntime:
     async def request_approval(self, run: AgentRun, action: str, reason: str) -> AgentApproval:
         approval = AgentApproval(run_id=run.id, action=action, reason=reason)
         self.session.add(approval)
-        await self.transition(run, "awaiting_approval")
+        await self.transition(
+            run, "awaiting_pr_approval" if action == "create_pull_request" else "awaiting_approval"
+        )
         await self.session.flush()
         return approval
 

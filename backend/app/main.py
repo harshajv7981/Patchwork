@@ -685,6 +685,11 @@ async def create_pr_for_issue(
             status_code=409,
             detail="A fully passing sandbox verification is required before creating a pull request",
         )
+    if sandbox_result.get("file_rewrites") != body.file_rewrites:
+        raise HTTPException(
+            status_code=409,
+            detail="These files differ from the ones that passed the sandbox; re-run sandbox verification first",
+        )
 
     # Create a pending PR record
     pr_record = PRModel(
@@ -693,9 +698,7 @@ async def create_pr_for_issue(
         status="creating",
         issue_number=issue.number,
         issue_url=issue.url,
-        patch_content="\n\n".join(
-            f"### {p}\n{c}" for p, c in body.file_rewrites.items()
-        ),
+        patch_content=json.dumps(body.file_rewrites),
         ai_summary=issue.ai_analysis,
         pr_body=body.pr_body,
         sandbox_result=issue.sandbox_result,
