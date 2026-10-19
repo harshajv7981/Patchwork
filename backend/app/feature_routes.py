@@ -314,6 +314,11 @@ async def create_pr_for_feature(
             status_code=409,
             detail="A fully passing sandbox verification is required before creating a pull request",
         )
+    if sandbox_result.get("file_rewrites") != body.file_rewrites:
+        raise HTTPException(
+            status_code=409,
+            detail="These files differ from the ones that passed the sandbox; re-run sandbox verification first",
+        )
 
     pr_body_text = body.pr_body
     is_ai_proposed = getattr(feature, "contribution_source", "ai_proposed") == "ai_proposed"
@@ -329,9 +334,7 @@ async def create_pr_for_feature(
         repository=feature.repository,
         title=body.pr_title,
         status="creating",
-        patch_content="\n\n".join(
-            f"### {p}\n{c}" for p, c in body.file_rewrites.items()
-        ),
+        patch_content=json.dumps(body.file_rewrites),
         ai_summary=feature.ai_analysis or feature.description,
         pr_body=pr_body_text,
         sandbox_result=feature.sandbox_result,
@@ -348,7 +351,7 @@ async def create_pr_for_feature(
             repo_full_name=feature.repository,
             feature_id=feature.id,
             pr_title=body.pr_title,
-            pr_body=body.pr_body,
+            pr_body=pr_body_text,
             file_rewrites=body.file_rewrites,
         )
         pr_record.status = "open"

@@ -212,6 +212,8 @@ class ContributionAgent:
             if sandbox.get("overall_status") != "passed":
                 await self._fail(run, "Sandbox verification failed after healing attempts")
                 return run
+            # Review and push exactly what passed the sandbox (healed files included).
+            rewrites = sandbox["file_rewrites"]
 
             await self.runtime.transition(run, "reviewing")
             review = await self._run_step(
@@ -314,13 +316,20 @@ class ContributionAgent:
         await self.runtime.transition(run, "executing")
         await self.session.commit()
 
-        result = await create_pull_request(
-            repo_full_name=run.repository,
-            issue_number=checkpoint["issue_number"],
-            pr_title=checkpoint["analysis"]["pr_title"],
-            pr_body=checkpoint["analysis"]["pr_body"],
-            file_rewrites=checkpoint["analysis"]["file_rewrites"],
-        )
+        try:
+            result = await create_pull_request(
+                repo_full_name=run.repository,
+                issue_number=checkpoint["issue_number"],
+                pr_title=checkpoint["analysis"]["pr_title"],
+                pr_body=checkpoint["analysis"]["pr_body"],
+                file_rewrites=checkpoint["sandbox"]["file_rewrites"],
+            )
+        except Exception:
+            # No PR was opened; hand the approval back so the reviewer can retry.
+            approval.status = "pending"
+            await self.runtime.transition(run, "awaiting_pr_approval")
+            await self.session.commit()
+            raise
         pr = PullRequest(
             repository=run.repository,
             title=checkpoint["analysis"]["pr_title"],
@@ -329,7 +338,7 @@ class ContributionAgent:
             status="open",
             branch_name=result.get("branch"),
             issue_number=checkpoint["issue_number"],
-            patch_content=json.dumps(checkpoint["analysis"]["file_rewrites"]),
+            patch_content=json.dumps(checkpoint["sandbox"]["file_rewrites"]),
             ai_summary=checkpoint["analysis"].get("analysis"),
             pr_body=checkpoint["analysis"]["pr_body"],
         )

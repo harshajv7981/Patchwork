@@ -22,6 +22,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+from app.agent_helpers import _clone_or_update
 from app.llm_client import get_llm_client
 from app.model_router import model_for
 
@@ -29,30 +30,12 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-REPOS_CACHE_DIR = Path.home() / ".patchwork" / "repos"
 SANDBOX_RUNTIME = os.getenv("SANDBOX_RUNTIME", "docker").lower()
 SANDBOX_DOCKER_IMAGE = os.getenv("SANDBOX_DOCKER_IMAGE", "patchwork-sandbox:latest")
 
 # Sandbox interpreter can target an older project-compatible Python without
 # changing the interpreter running the Patchwork backend.
 VENV_PYTHON = os.getenv("SANDBOX_PYTHON", sys.executable).strip() or sys.executable
-
-
-def _clone_or_get_repo(repo_full_name: str) -> Path:
-    """Ensure repository is cloned in local cache and return path."""
-    REPOS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    slug = repo_full_name.replace("/", "__")
-    dest = REPOS_CACHE_DIR / slug
-
-    if not dest.exists():
-        url = f"https://github.com/{repo_full_name}.git"
-        subprocess.run(
-            ["git", "clone", "--depth", "1", url, str(dest)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    return dest
 
 
 SENSITIVE_ENV_KEYS = {
@@ -67,7 +50,7 @@ SANDBOX_ENV_KEYS = {"VIRTUAL_ENV", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"}
 MAX_SANDBOX_MEMORY_MB = 512
 MAX_SANDBOX_OUTPUT_BYTES = 1_000_000
 SANDBOX_DEPENDENCY_TIMEOUT_SECONDS = 180
-MAX_HEAL_ATTEMPTS: int | None = 10
+MAX_HEAL_ATTEMPTS: int | None = None  # None -> OPENROUTER_HEAL_MAX_ATTEMPTS (default 3)
 TERMINAL_COMMANDS = {"python", "python3", "pytest", "node", "npm", "npx", "go", "cargo", "make"}
 
 
@@ -754,7 +737,7 @@ async def run_sandbox_validation(
         raise ValueError(f"Unsupported sandbox runtime: {runtime}")
 
     # 1. Fetch repo
-    local_repo = await asyncio.to_thread(_clone_or_get_repo, repo_full_name)
+    local_repo = await asyncio.to_thread(_clone_or_update, repo_full_name)
 
     # 2. Create isolated sandbox directory
     sandbox_id = str(uuid.uuid4())[:8]
@@ -896,7 +879,7 @@ async def auto_heal_code(
         diff_history = []
 
     if max_attempts is None:
-        configured_limit = os.getenv("OPENROUTER_HEAL_MAX_ATTEMPTS", "").strip()
+        configured_limit = os.getenv("OPENROUTER_HEAL_MAX_ATTEMPTS", "3").strip()
         max_attempts = int(configured_limit) if configured_limit else None
 
     if max_attempts is not None and attempt > max_attempts:
@@ -1049,7 +1032,7 @@ async def run_sandbox_validation_with_auto_heal(
         runtime=runtime,
     )
     if initial_result.get("overall_status") == "passed":
-        return initial_result
+        return {**initial_result, "file_rewrites": file_rewrites}
 
     try:
         healing = await auto_heal_code(

@@ -34,7 +34,8 @@ class AutomaticSandboxHealingTests(unittest.IsolatedAsyncioTestCase):
                 "owner/repo", "Fix issue", {"src.py": "pass"}, "process"
             )
 
-        self.assertEqual(result, clean_report)
+        # The verified files travel with the result so PR creation can push exactly them.
+        self.assertEqual(result, {**clean_report, "file_rewrites": {"src.py": "pass"}})
         heal.assert_not_awaited()
 
     async def test_failed_validation_returns_final_repair_and_history(self):

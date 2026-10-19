@@ -47,7 +47,7 @@
   3. 🏷️ **Static Type Checking (`mypy`)**: Type mismatch detection with `--ignore-missing-imports`.
   4. 🧪 **Automated Unit Testing (`pytest`)**: Targeted test execution with `-q -o addopts="" --tb=short` and timeout defense.
 - **Real-Time Report Card**: Live dashboard tab showing test counts, pass/fail status, execution duration, and formatted failure tracebacks.
-- **Terminal Error Recovery**: `/api/sandbox/verify` accepts an optional shell-free `terminal_command` token list (for example, `["python", "-m", "pytest", "tests"]`); its exit code and output are captured and sent to the self-healing loop. Healing defaults to 10 attempts and can be changed with `OPENROUTER_HEAL_MAX_ATTEMPTS`.
+- **Terminal Error Recovery**: `/api/sandbox/verify` accepts an optional shell-free `terminal_command` token list (for example, `["python", "-m", "pytest", "tests"]`); its exit code and output are captured and sent to the self-healing loop. Healing defaults to 3 attempts and can be changed with `OPENROUTER_HEAL_MAX_ATTEMPTS`.
 
 ### 5. AI Self-Healing Loop (Capped at 3 Attempts)
 - **Automated Failure Diagnostics**: Ingests test failure tracebacks, compilation errors, and linter warnings from the sandbox.
@@ -291,7 +291,7 @@ docker build -f Dockerfile.sandbox -t patchwork-sandbox:latest .
   - **Assignee Check**: Warns if the target issue is already assigned to another contributor.
   - **Contribution Policy**: Scans `CONTRIBUTING.md` for CLA requirements, "issue first" policies, or "no unsolicited PRs" language. Detects PR templates.
   - PRs are blocked on hard duplicate conflicts and surface warnings for soft conflicts.
-- **Self-Healing Limits**: The AI auto-heal loop is capped at 3 attempts. Each attempt is tracked with diff history so the LLM avoids repeating failed fixes. The full verification suite reruns after each heal. If the cap is exhausted without passing, the system stops and reports manual review is required.
+- **Self-Healing Limits**: The AI auto-heal loop is capped at 3 attempts by default (`OPENROUTER_HEAL_MAX_ATTEMPTS`). Each attempt is tracked with diff history so the LLM avoids repeating failed fixes. The full verification suite reruns after each heal. If the cap is exhausted without passing, the system stops and reports manual review is required.
 - **Contribution Quality Gates**: AI-proposed feature enhancements are flagged as `ai_proposed` and carry a review notice in the PR body. Maintainer-requested issue fixes (from GitHub issues) are prioritized over proactive proposals.
 - **Human-in-the-Loop Review**: All code diffs, test logs, and PR proposals require explicit user inspection and approval before dispatching to GitHub.
 
