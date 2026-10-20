@@ -1,6 +1,6 @@
 ---
 name: patchwork-bot
-description: Autonomous open-source contribution bot. Audits Python repos for real, provable bugs (and, on repos that already trust the bot, small cleanups and feature proposals), proves each bug with a failing test in a Docker sandbox, then files a bug report or opens a PR from the operator's own GitHub account under hard volume and etiquette limits. Run as `/patchwork-bot run`, `/patchwork-bot watch`, `/patchwork-bot audit <owner/repo>`, or `/patchwork-bot status`; add `--dry-run` to see what it would do without touching GitHub.
+description: Autonomous open-source contribution bot. Audits Python repos for real, provable bugs (and, on repos that already trust the bot, small cleanups and feature proposals), proves each bug with a failing test in a Docker sandbox, then files a bug report with a linked fix PR from the operator's own GitHub account under hard volume and etiquette limits. Run as `/patchwork-bot run`, `/patchwork-bot watch`, `/patchwork-bot audit <owner/repo>`, or `/patchwork-bot status`; add `--dry-run` to see what it would do without touching GitHub.
 disable-model-invocation: true
 ---
 
@@ -224,10 +224,24 @@ at this again" and is only for false positives, duplicates and things already fi
 
 Run `S check <repo>` immediately before any write; if it refuses, stop.
 
-- **Untrusted repo → bug report issue.** Save the fix as
-  `$PATCHWORK_BOT_HOME/patches/<repo-slug>-<short-title>.patch` (`git diff` including the
-  new test). Then `gh issue create` with the **Issue template**, and
-  `S add ... --type issue`.
+Always save the fix first as `$PATCHWORK_BOT_HOME/patches/<repo-slug>-<short-title>.patch`
+(`git diff` including the new test).
+
+- **Untrusted repo, small proven bug fix → issue + PR together.** "Small" means about 50
+  changed lines or fewer, including the test. Why both at once: the bot picks repos with
+  fast maintainers, and a fast maintainer will just fix a clearly reported small bug
+  themselves. The operator wants to author the fix, so reporting and then waiting for an
+  invitation gives the fix away. Steps:
+  1. `gh issue create` with the **Issue template** (its Fix line says the PR is linked).
+  2. Fork, push the branch `fix/<short-slug>` and `gh pr create` with the **PR template**,
+     starting with `Fixes #<issue>`. Fill in the repo's own PR template if it has one
+     (`.github/pull_request_template.md`) and keep its checklist honest.
+  3. Record it once: `S add ... --type pr --number <pr> --url <pr-url> --branch <branch>`.
+     An issue + PR pair is one finding, so it counts as one submission.
+- **Untrusted repo, otherwise → issue first.** Use this when the fix is larger, or when
+  CONTRIBUTING.md says changes of this kind need an issue or discussion before a PR.
+  `gh issue create` with the **Issue template** using the "happy to open a PR" Fix line,
+  then `S add ... --type issue`. Open the PR only when invited (see Watch).
 - **Trusted repo → PR directly** (bug or ponytail): `gh repo fork <repo> --clone=false`.
   Push a branch named `fix/<short-slug>` to the operator's fork. Open
   `gh pr create` with the **PR template**, then `S add ... --type pr --branch <branch>`.
@@ -306,7 +320,8 @@ Expected: <...>   Actual: <...>
 <file:line and a two-sentence explanation>
 
 ### Fix
-A minimal fix with a regression test is ready (<N> lines). Happy to open a PR if that's welcome.
+Issue + PR: A minimal fix with a regression test is in the linked PR.
+Issue first: A minimal fix with a regression test is ready (<N> lines). Happy to open a PR if that's welcome.
 
 ---
 <disclosure line>
