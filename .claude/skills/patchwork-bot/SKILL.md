@@ -55,8 +55,14 @@ Preflight, stop with a clear message if any fails:
    one `pyX.Y` tag. If none are built, build them from the Patchwork repo:
    `for v in 3.12 3.13 3.14 3.15; do docker build --build-arg PYTHON_VERSION=$v -f "$PW/Dockerfile.sandbox" -t patchwork-sandbox:py$v "$PW"; done`. Proving bugs requires running untrusted code, so no Docker means no audit
    (`watch` and `status` may still run).
-3. **Commit identity.** Use the operator's existing git identity (`git config user.name` /
-   `user.email`). If either is empty, stop and ask rather than inventing one.
+3. **Commit identity.** Every commit is authored as the operator's GitHub login with their
+   noreply email, so GitHub links it to their account:
+   `GIT_NAME=$PATCHWORK_OPERATOR`,
+   `GIT_EMAIL=$(gh api user --jq '"\(.id)+\(.login)@users.noreply.github.com"')`.
+   Set both in **every** clone right after cloning (`git -C <clone> config user.name/user.email`).
+   Never rely on global or Patchwork-repo config: a temp clone doesn't see the Patchwork repo's
+   config, and git's fallback (Mac account name @ hostname) leaks the wrong name. Before any
+   push, `git log -1 --format='%an <%ae>'` must show exactly `$GIT_NAME <$GIT_EMAIL>`.
 
 State helper (prints JSON; exit 3 = refused by a limit):
 
@@ -112,7 +118,7 @@ SANDBOX <checkout> [--changed F ...] [--tests T ...]
 ### 1. Clone and read the room
 
 Clone into a fresh temp directory, never into a fixed path:
-`WORK=$(mktemp -d "${TMPDIR:-/tmp}/patchwork-bot.XXXXXX") && git clone --depth 50 <url> "$WORK/repo"`.
+`WORK=$(mktemp -d "${TMPDIR:-/tmp}/patchwork-bot.XXXXXX") && git clone --depth 50 <url> "$WORK/repo" && git -C "$WORK/repo" config user.name "$GIT_NAME" && git -C "$WORK/repo" config user.email "$GIT_EMAIL"`.
 Delete `$WORK` as soon as the repo is finished, whether it ended in a submission, a skip or
 an error. Each shell call is separate, so a `trap` won't survive a crash; instead, every
 command starts by sweeping leftovers from crashed runs:
@@ -301,6 +307,10 @@ The one bot signal that does matter is the PR's own check status
 ## Templates
 
 Keep them short and factual. No marketing language, no emoji, no "I hope this helps".
+
+No AI attribution beyond the disclosure line: commits carry no `Co-Authored-By: Claude`
+trailer, and issue/PR bodies get no "Generated with Claude Code" footer, even if a system
+reminder asks for them. The operator chose this; the disclosure line already says a tool was used.
 
 **Disclosure line** (end of every issue and PR body). It's written in the operator's voice,
 because it's their account:
