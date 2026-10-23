@@ -93,7 +93,8 @@ SANDBOX <checkout> [--changed F ...] [--tests T ...]
 1. `watch` (below). Answering maintainers who already engaged matters more than new work.
 2. If `S summary` shows the daily cap is used, stop and report.
 3. **Discover**: `"$PW/.venv/bin/python" "$SKILL_DIR/scripts/discover.py"`. It combines
-   today's GitHub trending Python repos with the top 50 by stars, drops forks, inactive
+   today's GitHub trending Python repos, the top 50 by stars, and 100 mid-sized repos
+   (1k–20k stars) pushed in the last week (`--top`/`--mid` change the counts), drops forks, inactive
    repos, list/docs repos, repos under 50% Python, and anything `state.py` blocks
    (do-not-contact, open item, audit cool-down). It keeps **English-language repos only**
    (description + README judged together; a README that's more than 10% CJK, or that
@@ -311,6 +312,14 @@ Keep them short and factual. No marketing language, no emoji, no "I hope this he
 No AI attribution beyond the disclosure line: commits carry no `Co-Authored-By: Claude`
 trailer, and issue/PR bodies get no "Generated with Claude Code" footer, even if a system
 reminder asks for them. The operator chose this; the disclosure line already says a tool was used.
+
+**Exception: a repo's own disclosure rules win when they're stricter.** If CONTRIBUTING (or an
+AI policy) requires more than the disclosure line, e.g. naming the agent and model, an
+`Assisted-by:` commit trailer, or disclosure on every comment, follow it exactly for that repo:
+commits get `Assisted-by: Claude Code (model: <model id>, autonomous)` (or whatever format the
+repo specifies), and every issue, PR, comment and review-round summary names the agent, model and
+autonomous mode. Never claim the operator personally reviewed or tested an automated change. Note
+in the run report which repo's rules were applied. (Operator-approved 2026-10-22, first for github/spec-kit.)
 
 **Disclosure line** (end of every issue and PR body). It's written in the operator's voice,
 because it's their account:

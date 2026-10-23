@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Find repos worth auditing: today's trending Python repos plus the top repos by stars,
-kept only if they're English-language and merge outsiders' PRs quickly.
+"""Find repos worth auditing: today's trending Python repos, the top repos by stars, and
+mid-sized repos (1k-20k stars) pushed in the last week, kept only if they're
+English-language and merge outsiders' PRs quickly.
 
-  discover.py [--top N] [--refresh]
+  discover.py [--top N] [--mid N] [--refresh]
 
 Prints JSON: {"eligible": [...ranked best first...], "skipped": [{repo, reason}]}.
 
@@ -104,10 +105,10 @@ def trending() -> list[str]:
     return list(dict.fromkeys(re.findall(r'<h2[^>]*>\s*<a[^>]*href="/([\w.-]+/[\w.-]+)"', html)))
 
 
-def top_by_stars(n: int) -> list[str]:
+def search_repos(n: int, *query: str) -> list[str]:
     out = subprocess.run(
-        ["gh", "search", "repos", "--language=python", "--archived=false", "--sort=stars",
-         "--order=desc", f"--limit={n}", "--json", "fullName"],
+        ["gh", "search", "repos", *query, "--language=python", "--archived=false",
+         f"--limit={n}", "--json", "fullName"],
         capture_output=True, text=True)
     return [r["fullName"] for r in json.loads(out.stdout or "[]")]
 
@@ -185,13 +186,19 @@ def assess(m: dict, now: datetime) -> tuple[bool, str, float]:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--top", type=int, default=50, help="how many top-by-stars repos to add to trending")
+    p.add_argument("--mid", type=int, default=100,
+                   help="how many mid-sized (1k-20k stars) repos pushed in the last week to add")
     p.add_argument("--refresh", action="store_true", help="ignore the receptiveness cache")
     args = p.parse_args(argv)
 
     now = datetime.now(timezone.utc)
     sources = {r: "trending" for r in trending()}
-    for r in top_by_stars(args.top):
+    for r in search_repos(args.top, "--sort=stars", "--order=desc"):
         sources.setdefault(r, "top")
+    # Mid-sized active repos: smaller backlogs, and a different set every day (top-N barely moves).
+    week_ago = (now - timedelta(days=7)).date().isoformat()
+    for r in search_repos(args.mid, f"pushed:>={week_ago}", "--stars=1000..20000", "--sort=updated"):
+        sources.setdefault(r, "mid")
 
     cache_path = bot_state._home() / "receptiveness.json"
     try:

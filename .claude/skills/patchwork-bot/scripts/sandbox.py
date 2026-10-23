@@ -9,6 +9,7 @@ checkout you pass in is never modified.
 
 --changed  files to syntax/lint/type-check (the files the fix touched)
 --tests    run only these test files/dirs; default = the repo's whole suite (avoid on big repos)
+--dep-timeout  seconds for the dependency install (default 180; raise for torch-sized deps)
 Exit code: 0 if everything passed, 1 if anything failed, 2 on setup error.
 Run with the Patchwork virtualenv: <repo>/.venv/bin/python sandbox.py ...
 
@@ -91,6 +92,7 @@ def main() -> int:
     p.add_argument("--changed", nargs="*", default=[])
     p.add_argument("--tests", nargs="*", default=[])
     p.add_argument("--timeout", type=int, default=300)
+    p.add_argument("--dep-timeout", type=int, help="seconds for the dependency install (heavy deps like torch)")
     args = p.parse_args()
 
     src = Path(args.checkout).resolve()
@@ -102,6 +104,8 @@ def main() -> int:
         return 2
     sys.path.insert(0, str(PATCHWORK_ROOT / "backend"))
     from app import sandbox_service as sb
+    if args.dep_timeout:
+        sb.SANDBOX_DEPENDENCY_TIMEOUT_SECONDS = args.dep_timeout
 
     tried = []
     for version in versions:
