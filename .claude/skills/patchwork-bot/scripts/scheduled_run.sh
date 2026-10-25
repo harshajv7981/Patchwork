@@ -3,8 +3,9 @@
 #   scheduled_run.sh [run|watch|status]      default: run
 # Logs go to ~/.patchwork-bot/logs/; the last 60 are kept.
 set -u
-# launchd starts with a minimal PATH; gh, docker and claude live in Homebrew.
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# launchd starts with a minimal PATH; gh and claude live in Homebrew, docker in Docker
+# Desktop's ~/.docker/bin (it no longer links into /usr/local/bin).
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.docker/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 PW="$(cd "$(dirname "$0")/../../../.." && pwd)"
 LOG_DIR="$HOME/.patchwork-bot/logs"
