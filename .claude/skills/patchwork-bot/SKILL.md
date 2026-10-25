@@ -273,6 +273,30 @@ Only replies from humans whose `authorAssociation` is `OWNER`, `MEMBER` or
 The one bot signal that does matter is the PR's own check status
 (`statusCheckRollup`), handled under CI below.
 
+**Read every maintainer comment before closing an item out.** Once an item is set to
+`merged`, `closed` or `rejected` it leaves `S open` and is never read again, so any
+invitation left in its comments is lost. Before that status change, read all of the
+item's maintainer comments (and its linked issue's comments, for an issue + PR pair).
+Treat a comment that points at **another** issue and invites the operator to take it
+("filed as #N in case you'd like to take a look", "want to send a fix for #N too?") as a
+**follow-up invitation**. This happened once already: on Imbad0202/academic-research-skills#988 the
+owner filed #989 for us, the bot only recorded the merge, and the owner fixed #989
+themselves three days later.
+
+To act on a follow-up invitation:
+1. Check that #N is still open, has no assignee and has no linked PR.
+2. Treat #N as the finding: do step 2 (baseline), step 5 (prove: the test must fail for
+   the reason #N describes), step 6 (cold review) and step 8 (submit) on a fresh clone.
+   The invitation itself is the permission, so the PR goes in directly with
+   `Fixes #N`, whatever the repo's trust status.
+3. Record it with `S add` as usual. It counts toward the daily cap, but watch runs before
+   discovery, so it gets the first slot.
+4. If `S check` refuses, Docker is down, or the proof fails, don't drop the invitation.
+   Defer it (`S defer ... --note "invited: <comment url>"`) and list it under "needs you"
+   in the run report. If the bug can't be reproduced, reply once on #N and say so.
+
+Never let a follow-up invitation wait silently: fast maintainers fix these within days.
+
 **Issue items** (`issue_open`):
 
 - **Invitation**: "PR welcome", "go ahead", "feel free to send a fix", a 👍 from a
@@ -378,7 +402,9 @@ Also flag the item in the run report under "needs you", so the operator actually
 (`claude -p "/patchwork-bot run"` with pre-approved tools) and logs to
 `~/.patchwork-bot/logs/run-<timestamp>.log`, keeping the last 60. On macOS it's driven by
 a launchd job, `~/Library/LaunchAgents/local.patchwork-bot.plist`, at 10:00 daily (a
-missed run fires on wake).
+missed run fires on wake). That wake is often a network-less dark wake, so the script
+waits up to 8 hours for the Anthropic and GitHub APIs to be reachable before starting
+`claude`, and keeps the Mac awake during the run with `caffeinate -i`.
 
 - Run now: `launchctl kickstart gui/$(id -u)/local.patchwork-bot`
 - Pause: `launchctl bootout gui/$(id -u)/local.patchwork-bot`
