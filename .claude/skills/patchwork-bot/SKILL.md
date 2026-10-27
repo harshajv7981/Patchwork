@@ -15,7 +15,8 @@ moment someone says no. One careless submission can get the operator's account f
 banned, so when in doubt, drop the finding — a skipped bug costs nothing, a bad report
 costs the operator.
 
-The limits (daily cap, one open item per repo, do-not-contact, follow-up rounds) live in
+The limits (daily cap, one open item per repo, at most 2 new repos per rolling week,
+do-not-contact, follow-up rounds) live in
 `scripts/state.py` and are enforced there. Never work around a refusal from it; a refusal
 is the system working.
 
@@ -110,6 +111,10 @@ SANDBOX <checkout> [--changed F ...] [--tests T ...]
    report too. Work down `eligible` in order (trusted repos come first, then by score).
    Many will still be skipped at step 1 (CLA, AI policy) or step 2 (test suite won't run in
    the sandbox); that's expected and cheap.
+   `run --min-stars N` (operator's one-off choice, not the default): pass
+   `--min-stars N --top 100` to discover.py. It then searches only repos with at least N
+   stars and skips the merge-speed and backlog limits; the merge-rate floor still applies.
+   Expect slow replies on these repos.
 4. Audit up to **3 repos per run** (it's expensive) with the pipeline below, stopping as
    soon as the daily cap is reached.
 5. Report (see "Run report").
@@ -133,6 +138,16 @@ Mark the repo `dnc` with a reason and stop if any of these apply:
 - it prohibits or discourages AI-generated or automated contributions
 - it requires a CLA (a bot can't meaningfully sign one)
 - it says it doesn't accept outside contributions
+- it runs an automated PR guard: grep `.github/workflows/` for `unattended-pr-guard`,
+  `spam`, `slop`, `ai-generated` or `close-*-prs`. scrapy's `unattended-pr-guard` closed
+  our PR #8405 as spam 15 seconds after it opened, before any human saw it. A guard is the
+  maintainers saying they don't want automated PRs, so respect it: never reopen, appeal
+  or reword to get past one.
+
+Sending PRs to many unfamiliar repos at once is what maintainers object to most in
+automated contributions, so `S check` allows at most 2 new repos per rolling week. Once
+those are used, spend the day's remaining submissions on repos we've already worked with
+(trusted first), or defer.
 
 If it asks for an issue before any PR, note it; untrusted repos get an issue first anyway.
 Run `S audited <repo>` once you've gone past this step, even if nothing is found later.

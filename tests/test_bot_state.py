@@ -87,6 +87,25 @@ class BotLimitTests(unittest.TestCase):
         self.assertEqual(run("deferred", "o/a")[1]["o/a"], [])
         self.assertEqual(run("defer", *f, "--title", "DOI prefix")[0], bot.REFUSED)  # already submitted
 
+    def test_new_repos_per_week(self):
+        def age(days):  # move every item's created_at back, out of today's daily cap
+            path = Path(self.home.name) / "state.json"
+            st = json.loads(path.read_text())
+            for i in st["items"]:
+                i["created_at"] = (bot.datetime.now(bot.timezone.utc) - bot.timedelta(days=days)).isoformat()
+            path.write_text(json.dumps(st))
+
+        for i in range(bot.NEW_REPOS_PER_WEEK):
+            _, out = add(f"o/r{i}", "bug")
+            run("update", out["item"]["id"], "--status", "merged")
+        age(2)
+        code, out = add("o/brand-new", "bug")
+        self.assertEqual(code, bot.REFUSED)
+        self.assertIn("new repos this week", out["reason"])
+        self.assertEqual(add("o/r0", "second bug", number=2)[0], 0)  # a repo we've worked with is fine
+        age(8)
+        self.assertEqual(add("o/brand-new", "bug")[0], 0)  # the window rolls
+
     def test_audit_cooldown(self):
         self.assertEqual(run("check", "o/a", "--audit")[0], 0)
         run("audited", "o/a")

@@ -157,8 +157,9 @@ def measure(repo_data: dict, now: datetime) -> dict:
     }
 
 
-def assess(m: dict, now: datetime) -> tuple[bool, str, float]:
-    """(eligible, reason, score). Pure: all inputs come from measure()."""
+def assess(m: dict, now: datetime, any_speed: bool = False) -> tuple[bool, str, float]:
+    """(eligible, reason, score). Pure: all inputs come from measure().
+    any_speed: skip the merge-speed and backlog limits (operator chose big repos over fast ones)."""
     if m["is_fork"] or m["is_archived"]:
         return False, "fork or archived", 0.0
     if now - _ts(m["pushed_at"]) > timedelta(days=30):
@@ -174,6 +175,8 @@ def assess(m: dict, now: datetime) -> tuple[bool, str, float]:
     if m["merge_rate"] < MIN_MERGE_RATE:
         return False, f"merges only {m['merge_rate']:.0%} of outsider PRs", 0.0
     days = m["median_days"] if m["median_days"] is not None else 99
+    if any_speed:
+        return True, "receptive (speed not checked)", round(m["merge_rate"] / (1 + days), 3)
     large = m["stars"] >= LARGE_STARS
     limit = LARGE_MAX_MEDIAN_DAYS if large else MAX_MEDIAN_DAYS
     if days > limit:
@@ -189,16 +192,22 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--mid", type=int, default=100,
                    help="how many mid-sized (1k-20k stars) repos pushed in the last week to add")
     p.add_argument("--refresh", action="store_true", help="ignore the receptiveness cache")
+    p.add_argument("--min-stars", type=int, default=0,
+                   help="only the top --top repos with at least this many stars; no merge-speed limits")
     args = p.parse_args(argv)
 
     now = datetime.now(timezone.utc)
-    sources = {r: "trending" for r in trending()}
-    for r in search_repos(args.top, "--sort=stars", "--order=desc"):
-        sources.setdefault(r, "top")
-    # Mid-sized active repos: smaller backlogs, and a different set every day (top-N barely moves).
-    week_ago = (now - timedelta(days=7)).date().isoformat()
-    for r in search_repos(args.mid, f"pushed:>={week_ago}", "--stars=1000..20000", "--sort=updated"):
-        sources.setdefault(r, "mid")
+    if args.min_stars:
+        sources = {r: "top" for r in search_repos(
+            args.top, f"--stars=>={args.min_stars}", "--sort=stars", "--order=desc")}
+    else:
+        sources = {r: "trending" for r in trending()}
+        for r in search_repos(args.top, "--sort=stars", "--order=desc"):
+            sources.setdefault(r, "top")
+        # Mid-sized active repos: smaller backlogs, and a different set every day (top-N barely moves).
+        week_ago = (now - timedelta(days=7)).date().isoformat()
+        for r in search_repos(args.mid, f"pushed:>={week_ago}", "--stars=1000..20000", "--sort=updated"):
+            sources.setdefault(r, "mid")
 
     cache_path = bot_state._home() / "receptiveness.json"
     try:
@@ -223,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             m = measure(data, now)
             cache[repo] = {"at": now.isoformat(timespec="seconds"), "metrics": m}
-        good, reason, score = assess(m, now)
+        good, reason, score = assess(m, now, any_speed=bool(args.min_stars))
         row = {"repo": repo, "source": source, **{k: m[k] for k in
                ("stars", "merge_rate", "median_days", "backlog_months", "outsider_closed")}}
         if good:

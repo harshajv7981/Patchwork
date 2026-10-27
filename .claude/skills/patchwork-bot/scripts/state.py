@@ -17,8 +17,10 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-DAILY_NEW_SUBMISSIONS = 2   # new issues/PRs opened per day, all repos combined
+# new issues/PRs opened per day, all repos combined; PATCHWORK_DAILY_CAP is the operator's one-off override
+DAILY_NEW_SUBMISSIONS = int(os.environ.get("PATCHWORK_DAILY_CAP", 2))
 OPEN_PER_REPO = 1           # open items per repo at any time
+NEW_REPOS_PER_WEEK = 2      # first contacts per rolling 7 days; more trips "spray breadth" PR guards
 MAX_REVIEW_ROUNDS = 2       # automatic replies to review comments per PR
 MAX_CI_ATTEMPTS = 2         # automatic CI-fix pushes per PR
 AUDIT_COOLDOWN_DAYS = 14    # don't re-audit the same repo more often than this
@@ -77,6 +79,15 @@ def check(state: dict, repo: str, new_submission: bool = True, audit: bool = Fal
         made_today = [i for i in state["items"] if i["created_at"][:10] == today]
         if len(made_today) >= DAILY_NEW_SUBMISSIONS:
             return False, f"daily cap of {DAILY_NEW_SUBMISSIONS} new submissions reached"
+        # A repo is "new" until its first item; count repos whose first item is under 7 days old.
+        first = {}
+        for i in state["items"]:
+            first[i["repo"]] = min(first.get(i["repo"], i["created_at"]), i["created_at"])
+        week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        new_this_week = [r for r, at in first.items() if datetime.fromisoformat(at) > week_ago]
+        if repo not in first and len(new_this_week) >= NEW_REPOS_PER_WEEK:
+            return False, (f"already contacted {len(new_this_week)} new repos this week "
+                           f"(limit {NEW_REPOS_PER_WEEK}); use a repo we've worked with")
     return True, "ok"
 
 
