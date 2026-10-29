@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -91,6 +92,17 @@ def check(state: dict, repo: str, new_submission: bool = True, audit: bool = Fal
     return True, "ok"
 
 
+def cla_only_dnc(state: dict, repo: str) -> bool:
+    """True if the repo's dnc was only because it needs a CLA: no maintainer ever rejected an
+    item there, and the reason names a CLA and nothing about AI, bots or guards."""
+    # ponytail: judged from the free-text reason; record a dnc kind at mark time if this grows
+    if any(i["repo"] == repo and i["status"] == "rejected" for i in state["items"]):
+        return False
+    reason = state["repos"].get(repo, {}).get("reason", "").lower().replace("cla-bot", "cla")
+    refusal = r"\b(ai|ai_policy|llm|automat\w*|autonomous|bots?|guard|spam|generated|forbid\w*|rejected|no outside)\b"
+    return bool(re.search(r"\bcla", reason)) and not re.search(refusal, reason)
+
+
 def _out(payload: dict, code: int = 0) -> int:
     print(json.dumps(payload, indent=2))
     return code
@@ -144,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("repo")
     m.add_argument("status", choices=["new", "trusted", "dnc"])
     m.add_argument("--reason", default="")
+    m.add_argument("--lift-cla", action="store_true",
+                   help="lift a dnc that was only for a CLA (operator signs CLAs); never lifts a refusal")
 
     sub.add_parser("open", help="items that still need watching")
     r = sub.add_parser("repo", help="show a repo's trust status")
@@ -234,7 +248,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "mark":
         if state["repos"].get(args.repo, {}).get("status") == "dnc" and args.status != "dnc":
-            return _out({"ok": False, "reason": "do-not-contact is permanent"}, REFUSED)
+            if not (args.lift_cla and args.status == "new" and cla_only_dnc(state, args.repo)):
+                return _out({"ok": False, "reason": "do-not-contact is permanent"}, REFUSED)
         state["repos"].setdefault(args.repo, {}).update(status=args.status, reason=args.reason, at=_now())
         save(state)
         return _out({"ok": True, "repo": args.repo, "status": args.status})

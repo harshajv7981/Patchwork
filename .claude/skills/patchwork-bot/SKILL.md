@@ -79,6 +79,7 @@ S deferred [<repo>]            # the backlog; submitting or dropping a finding c
 S add --repo --kind --file --title --url --type issue|pr --number N [--branch]
 S update <id> [--status S] [--pr-url U --pr-number N] [--inc review|ci]
 S mark <repo> new|trusted|dnc [--reason]
+S mark <repo> new --lift-cla  # only undo for dnc: lifts one that was purely for a CLA, never a refusal
 S open | repo <repo> | summary
 ```
 
@@ -93,7 +94,10 @@ SANDBOX <checkout> [--changed F ...] [--tests T ...]
 
 1. `watch` (below). Answering maintainers who already engaged matters more than new work.
 2. If `S summary` shows the daily cap is used, stop and report.
-3. **Discover**: `"$PW/.venv/bin/python" "$SKILL_DIR/scripts/discover.py"`. It combines
+3. **Discover**: by default the operator wants big, well-known repos (decided 2026-10-29),
+   so run `"$PW/.venv/bin/python" "$SKILL_DIR/scripts/discover.py" --min-stars 20000 --top 100`
+   (see "Big-repo mode" below). `run --min-stars N` changes the threshold;
+   `run --breadth` runs discover.py with no flags, the original mode described next. It combines
    today's GitHub trending Python repos, the top 50 by stars, and 100 mid-sized repos
    (1k–20k stars) pushed in the last week (`--top`/`--mid` change the counts), drops forks, inactive
    repos, list/docs repos, repos under 50% Python, and anything `state.py` blocks
@@ -109,12 +113,15 @@ SANDBOX <checkout> [--changed F ...] [--tests T ...]
 
    Slow or closed repos are skipped: a repo that ignores outside PRs will ignore a bug
    report too. Work down `eligible` in order (trusted repos come first, then by score).
-   Many will still be skipped at step 1 (CLA, AI policy) or step 2 (test suite won't run in
-   the sandbox); that's expected and cheap.
-   `run --min-stars N` (operator's one-off choice, not the default): pass
-   `--min-stars N --top 100` to discover.py. It then searches only repos with at least N
-   stars and skips the merge-speed and backlog limits; the merge-rate floor still applies.
-   Expect slow replies on these repos.
+   Many will still be skipped at step 1 (AI ban, PR guard) or step 2 (test suite won't run
+   in the sandbox); that's expected and cheap. CLA and AI-allowing repos go ahead as
+   draft-gated (step 1).
+   **Big-repo mode** (`--min-stars N --top 100`, the default with N = 20000): discover.py
+   searches only repos with at least N stars and skips the merge-speed and backlog limits;
+   the merge-rate floor and every step-1 check still apply.
+   Expect slow replies on these repos. Famous repos are the likeliest to have CLAs and AI
+   policies, so expect most submissions here to be draft-gated. If no eligible repo survives,
+   say so in the run report rather than falling back to breadth mode.
 4. Audit up to **3 repos per run** (it's expensive) with the pipeline below, stopping as
    soon as the daily cap is reached.
 5. Report (see "Run report").
@@ -135,14 +142,26 @@ templates. Then grep these and the docs for `AI`, `LLM`, `ChatGPT`, `Copilot`,
 
 Mark the repo `dnc` with a reason and stop if any of these apply:
 
-- it prohibits or discourages AI-generated or automated contributions
-- it requires a CLA (a bot can't meaningfully sign one)
+- it prohibits or rejects AI-generated or automated contributions outright. Never get past a
+  ban by hiding the tool use: that deceives maintainers who said no, and these repos are the
+  ones that look for it
 - it says it doesn't accept outside contributions
 - it runs an automated PR guard: grep `.github/workflows/` for `unattended-pr-guard`,
   `spam`, `slop`, `ai-generated` or `close-*-prs`. scrapy's `unattended-pr-guard` closed
   our PR #8405 as spam 15 seconds after it opened, before any human saw it. A guard is the
   maintainers saying they don't want automated PRs, so respect it: never reopen, appeal
   or reword to get past one.
+
+**Draft-gated repos** (operator decision 2026-10-29): continue, but note that the repo is
+draft-gated if either of these applies:
+
+- it requires a CLA. The operator signs it themselves; record the CLA link.
+- it has an AI policy that allows AI-assisted contributions under conditions (disclosure,
+  human review, a named author who takes responsibility). Record what the policy requires,
+  and follow its disclosure rules exactly (see Templates).
+
+In a draft-gated repo the submission is a **draft PR only** (step 8), which the operator
+reviews and marks ready themselves.
 
 Sending PRs to many unfamiliar repos at once is what maintainers object to most in
 automated contributions, so `S check` allows at most 2 new repos per rolling week. Once
@@ -249,6 +268,14 @@ Run `S check <repo>` immediately before any write; if it refuses, stop.
 Always save the fix first as `$PATCHWORK_BOT_HOME/patches/<repo-slug>-<short-title>.patch`
 (`git diff` including the new test).
 
+- **Draft-gated repo (step 1) → draft PR only, whatever the trust status or fix size.**
+  Fork, push `fix/<short-slug>`, and `gh pr create --draft` with the **PR template** (and the
+  repo's own PR template, if it has one). Don't open an issue: an issue is public at once,
+  and the operator hasn't reviewed anything yet. Record it with
+  `S add ... --type pr --number <pr> --url <pr-url> --branch <branch>`. List it in the run
+  report under "needs you", with the CLA link to sign and/or what the AI policy requires
+  of a human reviewer, and, if the repo wants an issue first, a note that the operator
+  should file one before marking the PR ready. The bot never marks a draft ready itself.
 - **Untrusted repo, small proven bug fix → issue + PR together.** "Small" means about 50
   changed lines or fewer, including the test. Why both at once: the bot picks repos with
   fast maintainers, and a fast maintainer will just fix a clearly reported small bug
@@ -362,7 +389,11 @@ in the run report which repo's rules were applied. (Operator-approved 2026-10-22
 
 **Disclosure line** (end of every issue and PR body). It's written in the operator's voice,
 because it's their account:
-> *I found this with [patchwork](https://github.com/harshajv7981/Patchwork), an automated code-audit tool I run, and verified the reproduction test in an isolated sandbox. If tool-assisted reports aren't welcome here, let me know and I won't send more.*
+> *I found this with the help of an AI code-audit tool and verified the reproduction test in an isolated sandbox. If tool-assisted reports aren't welcome here, let me know and I won't send more.*
+
+Don't put "bot" or "automated" in titles, bodies, branches or comments (operator's choice,
+2026-10-29). This is wording only: the disclosure line still goes on everything, and a
+repo's stricter disclosure rules (above) still win.
 
 **Issue template (bug):**
 ```
