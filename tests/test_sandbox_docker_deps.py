@@ -59,6 +59,52 @@ lint = ["ruff"]
         self.assertIn("--no-index", offline["cmd"])
         self.assertEqual(offline["cmd"][-2:], ["-e", "/workspace/."])
 
+    def test_pep735_dependency_groups_for_tests_are_installed(self):
+        _, setup_error, calls = self._run({"pyproject.toml": """
+[project]
+name = "x"
+dependencies = []
+[dependency-groups]
+dev = ["pytest-socket", {include-group = "lint"}, "foo @ https://evil/foo.whl"]
+lint = ["ruff"]
+docs = ["sphinx"]
+"""})
+        self.assertIsNone(setup_error)
+        self.assertEqual(sorted(calls[0]["cmd"][4:]), ["pytest", "pytest-socket", "ruff", "setuptools>=40.8.0"])
+
+    def test_allowlisted_plugins_imported_by_conftest_are_installed(self):
+        _, setup_error, calls = self._run({
+            "pyproject.toml": "[project]\nname='x'\ndependencies=[]\n",
+            "test/units/conftest.py": "import pytest_mock\nfrom xdist import plugin\nimport evil_pkg\nfrom . import local\n",
+        })
+        self.assertIsNone(setup_error)
+        self.assertEqual(sorted(calls[0]["cmd"][4:]), ["pytest", "pytest-mock", "pytest-xdist", "setuptools>=40.8.0"])
+
+    def test_uv_workspace_members_install_offline_not_from_the_index(self):
+        _, setup_error, calls = self._run({
+            "pyproject.toml": "[project]\nname='app'\ndependencies=['harness','fastapi']\n"
+                              "[tool.uv.workspace]\nmembers=['packages/*']\n",
+            "packages/harness/pyproject.toml": "[project]\nname='harness'\ndependencies=['api==0.2','httpx']\n",
+            "packages/api/pyproject.toml": "[project]\nname='api'\ndependencies=[]\n",
+        })
+        self.assertIsNone(setup_error)
+        online, offline = calls
+        self.assertEqual(sorted(set(online["cmd"][4:])), ["fastapi", "httpx", "pytest", "setuptools>=40.8.0"])
+        self.assertEqual(offline["cmd"][-6:], ["-e", "/workspace/.", "-e", "/workspace/packages/api",
+                                               "-e", "/workspace/packages/harness"])
+
+    def test_project_root_with_requirements_file_is_still_installed_offline(self):
+        _, setup_error, calls = self._run({
+            "requirements.txt": "jinja2>=3\n",
+            "pyproject.toml": "[build-system]\nrequires=['setuptools<=80']\n"
+                              "[project]\nname='ansible-core'\ndynamic=['dependencies']\n",
+        })
+        self.assertIsNone(setup_error)
+        online, offline = calls
+        self.assertEqual(sorted(online["cmd"][4:]), ["jinja2>=3", "pytest", "setuptools<=80"])
+        self.assertIn("--no-index", offline["cmd"])
+        self.assertEqual(offline["cmd"][-2:], ["-e", "/workspace/."])
+
     def test_hash_pinned_requirements_keep_their_packages(self):
         _, _, calls = self._run({
             "requirements.txt": "requests==2.32.3 \\\n    --hash=sha256:abc\nclick==8.1.7 \\\n    --hash=sha256:def\n",
