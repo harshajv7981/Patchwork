@@ -4,8 +4,9 @@
 # Logs go to ~/.patchwork-bot/logs/; the last 60 are kept.
 set -u
 # launchd starts with a minimal PATH; gh and claude live in Homebrew, docker in Docker
-# Desktop's ~/.docker/bin (it no longer links into /usr/local/bin).
-export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.docker/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# Desktop's ~/.docker/bin (it no longer links into /usr/local/bin). The native installer's
+# ~/.local/bin/claude goes first: the Homebrew npm copy broke on a 2026-11-01 update.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.docker/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 PW="$(cd "$(dirname "$0")/../../../.." && pwd)"
 LOG_DIR="$HOME/.patchwork-bot/logs"

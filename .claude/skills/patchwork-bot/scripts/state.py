@@ -21,7 +21,9 @@ from pathlib import Path
 # new issues/PRs opened per day, all repos combined; PATCHWORK_DAILY_CAP is the operator's one-off override
 DAILY_NEW_SUBMISSIONS = int(os.environ.get("PATCHWORK_DAILY_CAP", 2))
 OPEN_PER_REPO = 1           # open items per repo at any time
-NEW_REPOS_PER_WEEK = 2      # first contacts per rolling 7 days; more trips "spray breadth" PR guards
+# first contacts per rolling 7 days; more trips "spray breadth" PR guards. PATCHWORK_NEW_REPOS_WEEK
+# is the operator's one-off override, like PATCHWORK_DAILY_CAP
+NEW_REPOS_PER_WEEK = int(os.environ.get("PATCHWORK_NEW_REPOS_WEEK", 2))
 MAX_REVIEW_ROUNDS = 2       # automatic replies to review comments per PR
 MAX_CI_ATTEMPTS = 2         # automatic CI-fix pushes per PR
 AUDIT_COOLDOWN_DAYS = 14    # don't re-audit the same repo more often than this

@@ -5,6 +5,7 @@ and type checkers (mypy) with automatic error diagnostics and AI self-healing.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import logging
@@ -37,6 +38,14 @@ PIP_CACHE_DIR = Path.home() / ".patchwork" / "pip-cache"
 DOCKER_VENV_DIR = ".patchwork-venv"
 DOCKER_VENV_PYTHON = f"/workspace/{DOCKER_VENV_DIR}/bin/python"
 TEST_EXTRAS = ("dev", "test", "tests", "testing")
+# Test plugins a conftest.py may import without the repo declaring them (e.g. ansible's runner
+# injects pytest-mock). Allowlist only: a repo must never choose what we fetch from the index.
+CONFTEST_PLUGINS = {
+    "pytest_mock": "pytest-mock", "pytest_asyncio": "pytest-asyncio", "pytest_socket": "pytest-socket",
+    "xdist": "pytest-xdist", "pytest_timeout": "pytest-timeout", "hypothesis": "hypothesis",
+    "freezegun": "freezegun", "time_machine": "time-machine", "responses": "responses",
+    "respx": "respx", "requests_mock": "requests-mock", "mock": "mock", "pytest_httpserver": "pytest-httpserver",
+}
 
 # Sandbox interpreter can target an older project-compatible Python without
 # changing the interpreter running the Patchwork backend.
@@ -366,12 +375,16 @@ def _prepare_docker_test_environment(
             [sandbox_dir] if pyproject.is_file() and not requirement_files else []
         )
     }
-    specs = ["pytest"]
+    specs = ["pytest", *_conftest_plugin_specs(sandbox_dir)]
     seen: set[Path] = set()
     for requirement_file in requirement_files:
         specs += _wheel_requirements(requirement_file, sandbox_dir, seen, projects)
+    for project_dir in list(projects):
+        for member in _uv_workspace_members(project_dir, sandbox_dir):
+            projects.setdefault(member, set())
+    local_names = {_project_name(project_dir, sandbox_dir) for project_dir in projects} - {""}
     for project_dir, requested_extras in projects.items():
-        project_specs = _static_project_requirements(project_dir, sandbox_dir, requested_extras)
+        project_specs = _static_project_requirements(project_dir, sandbox_dir, requested_extras, local_names)
         if project_specs is None:
             return DOCKER_VENV_PYTHON, manager, (
                 f"{project_dir.relative_to(sandbox_dir).as_posix()}/pyproject.toml does not declare "
@@ -379,6 +392,15 @@ def _prepare_docker_test_environment(
                 "runs a project's build scripts with network access."
             )
         specs += project_specs
+    # A [project] root next to requirements files (deps often dynamic, read from those files, as in
+    # ansible) is still a package the tests import: install it offline too, after its build backend.
+    install_only: list[Path] = []
+    root_data = _read_pyproject(sandbox_dir, sandbox_dir) if pyproject.is_file() else None
+    if requirement_files and sandbox_dir not in projects and isinstance((root_data or {}).get("project"), dict):
+        install_only.append(sandbox_dir)
+        build_requires = root_data.get("build-system", {}).get("requires", ["setuptools>=40.8.0"])
+        specs += [spec for spec in map(_wheel_spec, map(str, build_requires)) if spec]
+    offline = [*projects, *install_only]
 
     # Repo code (linters, terminal check) already ran in this tree; never reuse a venv it planted.
     venv_dir = sandbox_dir / DOCKER_VENV_DIR
@@ -398,10 +420,10 @@ def _prepare_docker_test_environment(
         runtime="docker",
         network=True,
     )
-    if code == 0 and projects:
+    if code == 0 and offline:
         editables = [
             arg
-            for project_dir in projects
+            for project_dir in offline
             for arg in ("-e", f"/workspace/{project_dir.relative_to(sandbox_dir).as_posix()}")
         ]
         code, out, err, _ = _run_cmd(
@@ -411,7 +433,7 @@ def _prepare_docker_test_environment(
             timeout=SANDBOX_DEPENDENCY_TIMEOUT_SECONDS,
             runtime="docker",
         )
-        if code != 0 and set(projects) == {sandbox_dir}:
+        if code != 0 and set(offline) == {sandbox_dir}:
             # The repo root isn't an installable package (e.g. a flat collection of modules).
             # Its declared deps are already in the venv and the offline run puts /workspace on
             # PYTHONPATH, so the tests can still import it from source.
@@ -487,30 +509,79 @@ def _wheel_requirements(
     return specs
 
 
+def _canonical(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _read_pyproject(project_dir: Path, root: Path) -> dict | None:
+    pyproject = _inside(project_dir / "pyproject.toml", root)
+    if pyproject is None:
+        return None
+    try:
+        return tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+
+
+def _project_name(project_dir: Path, root: Path) -> str:
+    project = (_read_pyproject(project_dir, root) or {}).get("project")
+    return _canonical(str(project.get("name", ""))) if isinstance(project, dict) else ""
+
+
+def _uv_workspace_members(project_dir: Path, root: Path) -> list[Path]:
+    """Local packages of a uv workspace ([tool.uv.workspace] members, globs allowed), inside root.
+
+    They live in the checkout, not on the index, so they're installed offline like the project.
+    """
+    workspace = (_read_pyproject(project_dir, root) or {}).get("tool", {}).get("uv", {}).get("workspace", {})
+    members: list[Path] = []
+    for pattern in workspace.get("members", []) if isinstance(workspace, dict) else []:
+        for candidate in sorted(project_dir.glob(str(pattern))):
+            member = _inside(candidate, root)
+            if member and member != project_dir.resolve() and (member / "pyproject.toml").is_file():
+                members.append(member)
+    return members
+
+
+def _conftest_plugin_specs(root: Path) -> list[str]:
+    """Allowlisted test plugins imported by any conftest.py, found by parsing (never running) them."""
+    found: set[str] = set()
+    for conftest in root.rglob("conftest.py"):
+        conftest = _inside(conftest, root)
+        if conftest is None or DOCKER_VENV_DIR in conftest.parts:
+            continue
+        try:
+            tree = ast.parse(conftest.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, SyntaxError, ValueError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                found.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                found.add(node.module.split(".")[0])
+    return sorted(CONFTEST_PLUGINS[name] for name in found if name in CONFTEST_PLUGINS)
+
+
 def _static_project_requirements(
     project_dir: Path,
     root: Path,
     requested_extras: set[str] = frozenset(),
+    local_names: set[str] = frozenset(),
 ) -> list[str] | None:
     """Build requirements plus runtime, test-extra and requested-extra deps from pyproject.toml, read as data.
 
     Returns None when the deps are not declared statically (no [project] table, or
     dependencies marked dynamic), since finding them would mean running project code.
+    Specs naming another local project (`local_names`) are skipped: it's installed offline.
     """
-    pyproject = _inside(project_dir / "pyproject.toml", root)
-    if pyproject is None:
-        return None
-    try:
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, tomllib.TOMLDecodeError):
+    data = _read_pyproject(project_dir, root)
+    if data is None:
         return None
     project = data.get("project")
     if not isinstance(project, dict) or "dependencies" in project.get("dynamic", []):
         return None
 
-    def canonical(name: str) -> str:
-        return re.sub(r"[-_.]+", "-", name).lower()
-
+    canonical = _canonical
     own_name = canonical(str(project.get("name", "")))
     extras = project.get("optional-dependencies", {})
     pending = list(data.get("build-system", {}).get("requires", ["setuptools>=40.8.0"]))
@@ -518,6 +589,18 @@ def _static_project_requirements(
     used_extras = set(TEST_EXTRAS) | requested_extras
     for extra in used_extras:
         pending += extras.get(extra, [])
+    # PEP 735 dependency groups (uv/pdm put test deps here); {include-group = ...} entries nest.
+    groups = data.get("dependency-groups", {})
+    names, seen = list(TEST_EXTRAS), set(TEST_EXTRAS)
+    while names:
+        for entry in groups.get(names.pop(), []):
+            if isinstance(entry, dict):
+                inc = entry.get("include-group")
+                if isinstance(inc, str) and inc not in seen:
+                    seen.add(inc)
+                    names.append(inc)
+            else:
+                pending.append(entry)
 
     specs: list[str] = []
     while pending:
@@ -531,6 +614,8 @@ def _static_project_requirements(
                 if extra and extra not in used_extras:
                     used_extras.add(extra)
                     pending += extras.get(extra, [])
+            continue
+        if canonical(match.group(1)) in local_names:
             continue
         specs.append(spec)
     return specs
