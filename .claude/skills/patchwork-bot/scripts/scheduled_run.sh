@@ -29,7 +29,7 @@ cd "$PW" || exit 1
   # caffeinate -i: don't idle-sleep mid-run (a run takes ~30 min).
   caffeinate -i claude -p "/patchwork-bot $CMD" \
     --allowedTools "Bash" "Read" "Write" "Edit" "Glob" "Grep" "Agent" \
-    --add-dir "$HOME/.patchwork-bot" --add-dir "${TMPDIR:-/tmp}"
+    --add-dir "$HOME/.patchwork-bot" --add-dir "$HOME/.bug-bounty" --add-dir "${TMPDIR:-/tmp}"
   echo "== exit=$? @ $(date) =="
 } > "$LOG" 2>&1
 

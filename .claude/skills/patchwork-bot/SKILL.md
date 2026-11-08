@@ -195,11 +195,24 @@ shared assumptions.
 
 - **Bug hunter (always).** Find defects reachable through the public API: wrong results,
   crashes on valid input, broken edge cases (empty, None, unicode, boundaries), resource
-  leaks, error handling that loses data, security bugs. For each finding give: `file:line`,
+  leaks, error handling that loses data. Security bugs belong to the security lens; if
+  this lens trips over one, tag it `security` anyway. For each finding give: `file:line`,
   the triggering input, expected vs. actual behaviour, why it happens, and confidence
   high/medium. Exclude style, typing nits, performance guesses, "might" bugs, and anything
   that needs network or credentials to reproduce. Five real findings beat twenty plausible
   ones.
+- **Security hunter (always).** Vulnerabilities an attacker can trigger through the
+  library's real entry points with attacker-controlled input: path traversal / zip slip in
+  extract or file-serving code, command injection (`shell=True`, `os.system`, string-built
+  argv), unsafe deserialization (`pickle`, `yaml.load`, `torch.load` without
+  `weights_only`, `eval`/`exec` on input), SSRF in URL-fetching helpers, template or SQL
+  injection, auth/permission checks that can be skipped in web frameworks, secrets written to
+  logs. For each give: the entry point, the attacker-controlled input, the concrete
+  impact (file read/write outside a root, code execution, auth bypass, data leak), and
+  confidence. Exclude: DoS/ReDoS-only issues, bugs that need the victim to run attacker
+  code or a config file they wrote themselves, code under `tests/`, `examples/` or dev
+  scripts, and "missing hardening" with no exploit. Every finding from this lens is
+  tagged `security`.
 - **Ponytail (trusted repos only).** Behaviour-preserving simplifications in the spirit of
   `$PW/CLAUDE.md`: dead code, duplicated logic, reimplemented stdlib, needless
   abstraction. Each must be small (one concern, under ~50 lines changed) and backed by
@@ -208,7 +221,7 @@ shared assumptions.
   would hit: a missing parameter, an unhandled common case, a documented-but-missing
   behaviour. Each needs a concrete use case.
 
-Untrusted repos get the bug lens only. Unsolicited cleanups and features from a stranger
+Untrusted repos get the bug and security lenses only. Unsolicited cleanups and features from a stranger
 are the contributions maintainers resent most.
 
 ### 4. Dedupe
@@ -252,9 +265,54 @@ the proof step already established that the bug is real, so a medium-confidence 
 caveats in the submission if they matter to a maintainer. Act on one `REVISE` if the
 fix is quick and review again; anything else, drop it.
 
+### 6b. Security findings go private, never public
+
+A finding tagged `security` **never reaches step 8** and never touches GitHub in public:
+no issue, no PR, no pushed branch, no fork commit, no comment, no discussion post. A public
+report of an unfixed vulnerability is irresponsible disclosure: it hands the exploit to
+everyone before users can patch, and it voids any bounty. That holds even on trusted
+repos and even if the fix is one line. It does not count toward the daily cap or
+`S add`.
+
+1. **Dedupe** (step 4) by searching issues **and** published advisories:
+   `gh api repos/<repo>/security-advisories` and the GitHub Advisory Database
+   (`gh api /advisories?affects=<package>`). Already known → `S drop`.
+2. **Prove** (step 5): the PoC is a regression test that fails on the untouched code by
+   *demonstrating the impact* inside the sandbox (writes a file outside the temp root,
+   runs a marker command, loads the pickle payload, reads the planted secret). Network is
+   off in the sandbox, so SSRF is shown by the URL the code *would* request (monkeypatch
+   the HTTP call), never by a real request. Write the minimal fix too and check it in the
+   sandbox, but keep it local: it goes in the report as suggested remediation.
+3. **Cold review** (step 6), adding: Is the input really attacker-controlled in normal
+   use of the library? Is the impact real, not theoretical? Would this land in the
+   program's exclusions? Only `PASS` proceeds.
+4. **Pick the channel**, from the clone and the policy pages (read-only):
+   - `huntr`: the repo is an AI/ML project listed on huntr.com (pays bounties for OSS AI/ML).
+     Policy: <https://huntr.com/guidelines>.
+   - `security-md`: `SECURITY.md` names a bounty program (HackerOne, Bugcrowd, own
+     program). Policy: that program's page.
+   - `google-oss-vrp`: the repo is owned by Google (`google/`, `googleapis/`,
+     `tensorflow/`, …). Policy: <https://bughunters.google.com/about/rules/open-source>.
+   - `ghsa`: no bounty anywhere, but GitHub private vulnerability reporting is on
+     (`gh api repos/<repo>/private-vulnerability-reporting --jq .enabled`). No money, but
+     a CVE credit builds reputation. Policy: the repo's SECURITY.md URL.
+   - `email`: only a security email in SECURITY.md. Policy: the SECURITY.md URL.
+   - No private channel at all → still don't go public. Queue it with channel `none`;
+     the operator decides.
+5. **Queue it**:
+   `"$PW/.venv/bin/python" "$PW/.claude/skills/bug-bounty/scripts/log.py" candidate --repo <repo> --file <file> --title "<vuln title>" --channel <channel> --policy <https url> --severity <low|medium|high|critical> --note "<one line>"`.
+   Into the folder it prints, write: `report.md` filled from the template (affected
+   version = the commit SHA you cloned), `poc_test.py` (the failing test), `fix.patch`
+   (`git diff` of the fix), and `sandbox.txt` (the sandbox output of the failing run).
+   Never put real secrets in these files.
+6. `S drop --repo ... --reason "security: queued as <bc-id>"` so later audits never find
+   it again and submit it publicly by mistake.
+
+The operator takes it from there with `/bug-bounty candidates` and `/bug-bounty promote`.
+
 ### 7. Rank and pick
 
-Rank the surviving findings by impact × confidence × smallness. Submit the top one (and
+Rank the surviving non-security findings (security ones left at 6b) by impact × confidence × smallness. Submit the top one (and
 another only if the cap allows and it's from a different repo; the one-open-item-per-repo
 rule means a second finding in the same repo waits for a later run). **Defer** the other
 proven-or-plausible findings with `S defer ...` (include confidence and a short note) so
@@ -467,6 +525,9 @@ End every command with a short report:
 - repos audited (and those skipped, with the reason)
 - findings proven / dropped (with the reasons, briefly)
 - submissions made (with links), or the dry-run file path
+- **bounty candidates** queued this run (`bc-` id, repo, title, channel, severity). Say
+  only that they exist, never the vulnerability details, since run logs aren't private
+  storage
 - **needs you**: items where a follow-up limit was hit, or a maintainer asked something the
   bot couldn't answer with certainty. Link each one.
 - the `S summary` line
