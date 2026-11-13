@@ -3,7 +3,12 @@ FROM python:${PYTHON_VERSION}-slim
 
 ARG TARGETARCH
 
-RUN pip install --no-cache-dir pytest flake8 mypy semgrep bandit pip-audit
+# Pre-release Pythons can lack wheels for semgrep's deps (ruamel.yaml.clib on 3.15):
+# only then add a compiler, build, and drop it again in the same layer.
+RUN pip install --no-cache-dir pytest flake8 mypy semgrep bandit pip-audit \
+    || (apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+        && pip install --no-cache-dir pytest flake8 mypy semgrep bandit pip-audit \
+        && apt-get purge -y --auto-remove gcc libc6-dev && rm -rf /var/lib/apt/lists/*)
 
 # Sandbox runs have no network, so the semgrep ruleset and gitleaks binary are baked in at build time.
 RUN python - <<'EOF'
