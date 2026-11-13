@@ -1,6 +1,7 @@
 """
 Sandbox Service: Isolated environment execution for pytest, linters (flake8/ruff),
-and type checkers (mypy) with automatic error diagnostics and AI self-healing.
+type checkers (mypy) and security scanners (bandit, semgrep, gitleaks, pip-audit)
+with automatic error diagnostics and AI self-healing.
 """
 
 from __future__ import annotations
@@ -344,6 +345,104 @@ def _check_types(sandbox_dir: Path, target_files: list[str], runtime: str) -> di
         "errors_count": len(type_errors),
         "errors": type_errors[:15],
         "summary": "Strict type check passed" if passed else f"{len(type_errors)} type issue(s) detected",
+    }
+
+
+SEMGREP_RULES = "/opt/semgrep/python.yml"  # baked into Dockerfile.sandbox; the run is offline
+SCAN_SEVERITY = {"HIGH": "high", "ERROR": "high", "MEDIUM": "medium", "WARNING": "medium", "LOW": "low", "INFO": "low"}
+
+
+def _parse_bandit(out: str) -> list[dict[str, Any]]:
+    return [
+        {"tool": "bandit", "file": r["filename"], "line": r["line_number"], "rule": r["test_id"],
+         "severity": SCAN_SEVERITY.get(r["issue_severity"], "low"), "message": r["issue_text"]}
+        for r in json.loads(out)["results"]
+    ]
+
+
+def _parse_semgrep(out: str) -> list[dict[str, Any]]:
+    return [
+        {"tool": "semgrep", "file": r["path"], "line": r["start"]["line"], "rule": r["check_id"].removeprefix("opt.semgrep."),
+         "severity": SCAN_SEVERITY.get(r["extra"]["severity"], "low"), "message": r["extra"]["message"]}
+        for r in json.loads(out)["results"]
+    ]
+
+
+def _parse_gitleaks(out: str) -> list[dict[str, Any]]:
+    # Never copy the Secret/Match fields: the report must not re-leak what it found.
+    return [
+        {"tool": "gitleaks", "file": r["File"], "line": r["StartLine"], "rule": r["RuleID"],
+         "severity": "high", "message": r["Description"]}
+        for r in json.loads(out or "[]")
+    ]
+
+
+def _parse_pip_audit(out: str) -> list[dict[str, Any]]:
+    # pip-audit reports no severity; "unknown" keeps it report-only (it audits pre-existing deps).
+    # It can list a vuln twice, and the venv's own pip is not a project dependency.
+    findings = {
+        (d["name"], v["id"]): {
+            "tool": "pip-audit", "file": f"{d['name']}=={d['version']}", "line": "-", "rule": v["id"],
+            "severity": "unknown", "message": f"fixed in: {', '.join(v.get('fix_versions') or []) or 'no fix yet'}"}
+        for d in json.loads(out)["dependencies"] if d["name"] != "pip"
+        for v in d.get("vulns", [])
+    }
+    return list(findings.values())
+
+
+def _check_security(sandbox_dir: Path, target_files: list[str], runtime: str) -> dict[str, Any]:
+    """Run bandit, semgrep and gitleaks on modified files, and pip-audit on the installed deps.
+
+    High findings in modified files block; pip-audit findings are reported only.
+    """
+    files = [f for f in target_files if (sandbox_dir / f).is_file()]
+    py_files = [f for f in files if f.endswith(".py")]
+    findings: list[dict[str, Any]] = []
+    errors: list[str] = []
+    tools: list[str] = []
+
+    def scan(tool, cmd, parse, ok_codes=(0,), timeout=60, network=False):
+        tools.append(tool)
+        code, out, err, _ = _run_cmd(cmd, cwd=sandbox_dir, timeout=timeout, runtime=runtime, network=network)
+        try:
+            if code not in ok_codes:
+                raise ValueError
+            findings.extend(parse(out))
+        except (ValueError, KeyError, TypeError):
+            errors.append(f"{tool}: {(err or out).strip()[-300:] or f'exit code {code}'}")
+
+    if py_files:
+        scan("bandit", ["bandit", "-q", "-f", "json", *py_files], _parse_bandit, ok_codes=(0, 1))
+        scan("semgrep", ["semgrep", "scan", "--config", SEMGREP_RULES, "--json", "--quiet", "--metrics=off",
+                         "--disable-version-check", *py_files], _parse_semgrep, timeout=120)
+    for f in files:
+        scan("gitleaks", ["gitleaks", "dir", f, "--no-banner", "--redact", "--exit-code", "0",
+                          "--report-format", "json", "--report-path", "-"], _parse_gitleaks)
+    # pip-audit needs the vulnerability DB, so it gets the network run; it only reads package
+    # metadata from the venv (never imports it), so no repo code runs while online.
+    for site in sandbox_dir.glob(f"{DOCKER_VENV_DIR}/lib/python*/site-packages"):
+        path = f"/workspace/{site.relative_to(sandbox_dir)}" if runtime == "docker" else str(site)
+        scan("pip-audit", ["pip-audit", "--path", path, "-f", "json", "--progress-spinner", "off"],
+             _parse_pip_audit, ok_codes=(0, 1), timeout=120, network=True)
+
+    blocking = [f for f in findings if f["severity"] == "high"]
+    tools = list(dict.fromkeys(tools))
+    if not tools:
+        summary = "No files to scan"
+    elif blocking:
+        summary = f"{len(blocking)} high-severity security finding(s)"
+    else:
+        summary = f"{len(findings)} non-blocking security finding(s)" if findings else "No security findings"
+    if errors:
+        summary += f" ({len(errors)} scanner error(s))"
+    return {
+        "passed": not blocking,
+        "tools": tools,
+        "findings_count": len(findings),
+        "blocking_count": len(blocking),
+        "findings": (blocking + [f for f in findings if f["severity"] != "high"])[:30],
+        "errors": errors,
+        "summary": summary,
     }
 
 
@@ -1121,6 +1220,9 @@ async def run_sandbox_validation(
                     test_res.get("python_path"),
                 )
 
+        # After the tests so pip-audit can read the venv they installed.
+        security_res = await asyncio.to_thread(_check_security, temp_dir, target_files, runtime)
+
         total_duration = round(time.time() - t_start, 2)
 
         # 5. Compute overall score & status
@@ -1130,6 +1232,7 @@ async def run_sandbox_validation(
             and type_res["passed"]
             and terminal_res["passed"]
             and test_res["passed"]
+            and security_res["passed"]
         )
         has_warnings = (not lint_res["passed"]) or (not type_res["passed"])
 
@@ -1155,8 +1258,9 @@ async def run_sandbox_validation(
                 "type_check": type_res,
                 "terminal": terminal_res,
                 "tests": test_res,
+                "security": security_res,
             },
-            "summary": f"{test_res['summary']} | {lint_res['summary']} | {type_res['summary']}",
+            "summary": f"{test_res['summary']} | {lint_res['summary']} | {type_res['summary']} | {security_res['summary']}",
             "modified_files": target_files,
         }
 
@@ -1219,6 +1323,10 @@ async def auto_heal_code(
     lint_warnings = sandbox_diagnostics.get("checks", {}).get("linter", {}).get("warnings", [])
     type_errors = sandbox_diagnostics.get("checks", {}).get("type_check", {}).get("errors", [])
     terminal_check = sandbox_diagnostics.get("checks", {}).get("terminal", {})
+    security_findings = [
+        f for f in sandbox_diagnostics.get("checks", {}).get("security", {}).get("findings", [])
+        if f.get("severity") == "high"
+    ]
 
     current_code_blocks = "\n\n".join(
         f"=== FILE: {path} ===\n{content}\n=== END FILE ==="
@@ -1251,6 +1359,7 @@ async def auto_heal_code(
         - Type Errors: {json.dumps(type_errors, indent=2)}
         - Lint Warnings: {json.dumps(lint_warnings[:5], indent=2)}
         - Terminal Check: {json.dumps(terminal_check, indent=2)}
+        - High-Severity Security Findings: {json.dumps(security_findings, indent=2)}
         {prior_attempts_block}
 
         Instructions:

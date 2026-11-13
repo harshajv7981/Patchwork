@@ -1,6 +1,25 @@
 ARG PYTHON_VERSION=3.12
 FROM python:${PYTHON_VERSION}-slim
 
-RUN pip install --no-cache-dir pytest flake8 mypy
+ARG TARGETARCH
+
+RUN pip install --no-cache-dir pytest flake8 mypy semgrep bandit pip-audit
+
+# Sandbox runs have no network, so the semgrep ruleset and gitleaks binary are baked in at build time.
+RUN python - <<'EOF'
+import hashlib, io, os, tarfile, urllib.request
+os.makedirs("/opt/semgrep", exist_ok=True)
+urllib.request.urlretrieve("https://semgrep.dev/c/p/python", "/opt/semgrep/python.yml")
+version = "8.30.1"  # bump together with the checksums below
+arch = {"amd64": "x64", "arm64": "arm64"}[os.environ.get("TARGETARCH") or "amd64"]
+sha256 = {
+    "x64": "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
+    "arm64": "e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080",
+}[arch]
+url = f"https://github.com/gitleaks/gitleaks/releases/download/v{version}/gitleaks_{version}_linux_{arch}.tar.gz"
+data = urllib.request.urlopen(url).read()
+assert hashlib.sha256(data).hexdigest() == sha256, "gitleaks checksum mismatch"
+tarfile.open(fileobj=io.BytesIO(data)).extract("gitleaks", "/usr/local/bin", filter="data")
+EOF
 
 WORKDIR /workspace
